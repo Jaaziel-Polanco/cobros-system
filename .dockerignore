@@ -1,0 +1,10 @@
+node_modules
+.next
+.git
+.gitignore
+.env*
+*.md
+deploy.ini
+.vscode
+.cursor
+supabase/migrations
