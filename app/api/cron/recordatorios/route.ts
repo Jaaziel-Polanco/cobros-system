@@ -129,26 +129,6 @@ export async function GET(req: NextRequest) {
             .select('*')
             .eq('activo', true)
 
-        // Pre-cargar referencias para deudas en mora_alta/recuperacion (usar etapa de la DB)
-        const clientesEnMoraIds = deudas
-            ?.filter(d => d.etapa === 'mora_alta' || d.etapa === 'recuperacion')
-            .map(d => d.cliente_id) ?? []
-
-        let referenciasMap = new Map<string, Array<Record<string, unknown>>>()
-        if (clientesEnMoraIds.length > 0) {
-            const { data: referencias } = await supabase
-                .from('referencias_cliente')
-                .select('*')
-                .in('cliente_id', [...new Set(clientesEnMoraIds)])
-                .neq('estado_contacto', 'entregado')
-
-            referencias?.forEach(ref => {
-                const arr = referenciasMap.get(ref.cliente_id) || []
-                arr.push(ref)
-                referenciasMap.set(ref.cliente_id, arr)
-            })
-        }
-
         // 4. Obtener webhook activo
         const { data: webhook } = await supabase
             .from('webhooks')
@@ -269,46 +249,6 @@ export async function GET(req: NextRequest) {
                 enviado_por: 'cron',
             }))
 
-            // Envíos a referencias con anti-duplicado propio
-            if (etapaActual === 'mora_alta' || etapaActual === 'recuperacion') {
-                const refsDelCliente = referenciasMap.get(deuda.cliente_id) as Array<Record<string, string>> | undefined ?? []
-                const plantillaRef = plantillas?.find(p => p.etapa === 'referencia')
-
-                if (plantillaRef && refsDelCliente.length > 0) {
-                    for (const ref of refsDelCliente) {
-                        // Anti-duplicado para cada referencia individual
-                        const ultimoEnvioRef = enviosDeuda
-                            .filter(e => e.tipo_destino === 'referencia' && e.referencia_id === ref.id)
-                            .sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())[0]?.sent_at ?? null
-
-                        if (!debeEnviar(ultimoEnvioRef, intervalo)) {
-                            continue
-                        }
-
-                        const varRef = { ...variables, nombre_referencia: ref.nombre, relacion: ref.relacion ?? '' }
-                        const mensajeRef = renderTemplate(plantillaRef.contenido, varRef)
-                        const payloadRef: WebhookPayload = {
-                            ...payload,
-                            tipo_destino: 'referencia',
-                            mensaje: mensajeRef,
-                            referencia: { id: ref.id, nombre: ref.nombre, telefono: ref.telefono, relacion: ref.relacion },
-                        }
-
-                        tareasEnvio.push(() => procesarEnvio(supabase, webhook, payloadRef, {
-                            deuda_id: deuda.id,
-                            cliente_id: deuda.cliente_id,
-                            webhook_id: webhook.id,
-                            plantilla_id: plantillaRef.id,
-                            etapa: etapaActual,
-                            mensaje_enviado: mensajeRef,
-                            payload: payloadRef,
-                            tipo_destino: 'referencia',
-                            referencia_id: ref.id,
-                            enviado_por: 'cron',
-                        }))
-                    }
-                }
-            }
         }
 
         // Ejecutar en lotes

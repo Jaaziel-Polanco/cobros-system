@@ -231,6 +231,18 @@ export interface WebhookPayload {
     }
 }
 
+// ─── TIENDAS REFERIDAS (independiente de cobranza) ────────────
+
+export interface TiendaReferida {
+    id: string
+    nombre: string
+    telefono: string
+    notas?: string
+    activo: boolean
+    created_at: string
+    updated_at: string
+}
+
 // ─── TIPOS DE DASHBOARD ───────────────────────────────────────
 
 export interface DashboardStats {

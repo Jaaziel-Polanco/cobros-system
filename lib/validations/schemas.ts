@@ -133,6 +133,16 @@ export const UsuarioCreateDirectoSchema = z.object({
 
 export type UsuarioCreateDirectoFormData = z.infer<typeof UsuarioCreateDirectoSchema>
 
+// ─── TIENDAS REFERIDAS ───────────────────────────────────────
+
+export const TiendaReferidaSchema = z.object({
+    nombre: z.string().min(1, 'El nombre es requerido').max(150),
+    telefono: z.string().min(7, 'Teléfono inválido').max(20),
+    notas: z.string().max(500).optional().or(z.literal('')),
+})
+
+export type TiendaReferidaFormData = z.infer<typeof TiendaReferidaSchema>
+
 // ─── LOGIN ───────────────────────────────────────────────────
 
 export const LoginSchema = z.object({
