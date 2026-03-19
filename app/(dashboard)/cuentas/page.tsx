@@ -13,8 +13,8 @@ export default async function CuentasPage() {
       agente:profiles(id, full_name, rol, activo, created_at, updated_at),
       configuracion:configuracion_recordatorio(*)
     `).order('created_at', { ascending: false }),
-        supabase.from('clientes').select('id, nombre, apellido, telefono, dni_ruc').eq('activo', true).order('nombre'),
-        supabase.from('profiles').select('id, full_name, rol, activo, created_at, updated_at').eq('activo', true),
+        supabase.from('clientes').select('id, nombre, apellido, telefono, dni_ruc, agente_id').eq('activo', true).order('nombre'),
+        supabase.from('profiles').select('id, full_name, rol, activo, created_at, updated_at'),
     ])
 
     return (

@@ -1,10 +1,10 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
+import { createClient as createAdminClient } from '@supabase/supabase-js'
 import { revalidatePath } from 'next/cache'
 import { renderTemplate, formatMonto, formatFecha } from '@/lib/utils/template-renderer'
 import { WebhookPayload, EtapaCobranza } from '@/lib/types'
-import { estaEnHorarioLaboral } from '@/lib/utils/horario'
 import { debeEnviarPreventivo } from '@/lib/utils/cobranza-engine'
 
 export async function getLogs(filters?: {
@@ -180,45 +180,64 @@ export async function enviarRecordatorioManual(deudaId: string) {
  * Retorna silenciosamente si no aplica o falla.
  */
 export async function intentarEnvioInmediato(deudaId: string): Promise<void> {
+    console.log(`[ENVIO_INMEDIATO] Iniciando para deuda ${deudaId}`)
     try {
-        if (!estaEnHorarioLaboral()) return
+        const supabase = createAdminClient(
+            process.env.NEXT_PUBLIC_SUPABASE_URL!,
+            process.env.SUPABASE_SERVICE_ROLE_KEY!,
+            { auth: { autoRefreshToken: false, persistSession: false } }
+        )
 
-        const supabase = await createClient()
-
-        const { data: deuda } = await supabase
+        const { data: deuda, error: deudaErr } = await supabase
             .from('deudas')
             .select(`
                 *,
-                cliente:clientes(*),
-                agente:profiles(id, full_name),
-                configuracion:configuracion_recordatorio(*)
+                cliente:clientes(*)
             `)
             .eq('id', deudaId)
             .single()
 
-        if (!deuda || deuda.estado !== 'activo' || deuda.pausado) return
+        let agenteNombre: string | null = null
+        if (deuda?.agente_id) {
+            const { data: ag } = await supabase
+                .from('profiles')
+                .select('id, full_name')
+                .eq('id', deuda.agente_id)
+                .single()
+            agenteNombre = ag?.full_name ?? null
+        }
+
+        if (deudaErr) {
+            console.error(`[ENVIO_INMEDIATO] Error leyendo deuda:`, deudaErr.message)
+            return
+        }
+
+        if (!deuda || deuda.estado !== 'activo' || deuda.pausado) {
+            console.log(`[ENVIO_INMEDIATO] Deuda no califica: estado=${deuda?.estado} pausado=${deuda?.pausado}`)
+            return
+        }
+
+        const { data: config } = await supabase
+            .from('configuracion_recordatorio')
+            .select('*')
+            .eq('deuda_id', deudaId)
+            .maybeSingle()
 
         const etapa = deuda.etapa as EtapaCobranza
-        if (etapa === 'saldado') return
+        console.log(`[ENVIO_INMEDIATO] Deuda ${deudaId}: etapa=${etapa}, dias_atraso=${deuda.dias_atraso}`)
 
-        // Para preventivos, verificar ventana de dias_antes_vencimiento
-        if (etapa === 'preventivo' && deuda.configuracion) {
-            if (!debeEnviarPreventivo(deuda.fecha_corte, deuda.configuracion.dias_antes_vencimiento)) {
+        if (etapa === 'saldado') {
+            console.log(`[ENVIO_INMEDIATO] Deuda saldada, omitida`)
+            return
+        }
+
+        if (etapa === 'preventivo' && config) {
+            if (!debeEnviarPreventivo(deuda.fecha_corte, config.dias_antes_vencimiento)) {
+                console.log(`[ENVIO_INMEDIATO] Preventivo fuera de ventana, omitida`)
                 return
             }
         }
 
-        // Verificar que no se haya enviado ya (por si acaso)
-        const { data: envioExistente } = await supabase
-            .from('envios_log')
-            .select('id')
-            .eq('deuda_id', deudaId)
-            .eq('tipo_destino', 'cliente')
-            .limit(1)
-
-        if (envioExistente && envioExistente.length > 0) return
-
-        // Buscar plantilla para esta etapa
         const { data: plantilla } = await supabase
             .from('plantillas_mensaje')
             .select('*')
@@ -226,16 +245,21 @@ export async function intentarEnvioInmediato(deudaId: string): Promise<void> {
             .eq('activo', true)
             .maybeSingle()
 
-        if (!plantilla) return
+        if (!plantilla) {
+            console.error(`[ENVIO_INMEDIATO] No hay plantilla activa para etapa "${etapa}"`)
+            return
+        }
 
-        // Buscar webhook activo
         const { data: webhook } = await supabase
             .from('webhooks')
             .select('*')
             .eq('activo', true)
             .maybeSingle()
 
-        if (!webhook) return
+        if (!webhook) {
+            console.error(`[ENVIO_INMEDIATO] No hay webhook activo configurado`)
+            return
+        }
 
         const cuotaImm = deuda.cuota_mensual
             ? formatMonto(deuda.cuota_mensual)
@@ -250,7 +274,7 @@ export async function intentarEnvioInmediato(deudaId: string): Promise<void> {
             fecha_corte: formatFecha(deuda.fecha_corte),
             dias_atraso: deuda.dias_atraso,
             tasa_interes: deuda.tasa_interes,
-            agente: deuda.agente?.full_name ?? 'Inversiones Cordero',
+            agente: agenteNombre ?? 'Inversiones Cordero',
         }
 
         const mensajeRendered = renderTemplate(plantilla.contenido, variables)
@@ -279,16 +303,15 @@ export async function intentarEnvioInmediato(deudaId: string): Promise<void> {
                 frecuencia_pago: deuda.frecuencia_pago,
             },
             mensaje: mensajeRendered,
-            agente: deuda.agente
-                ? { id: deuda.agente.id, nombre: deuda.agente.full_name }
+            agente: deuda.agente_id && agenteNombre
+                ? { id: deuda.agente_id, nombre: agenteNombre }
                 : undefined,
         }
 
+        console.log(`[ENVIO_INMEDIATO] Enviando webhook para ${deuda.cliente.nombre} ${deuda.cliente.apellido}...`)
         const result = await fetchWebhookConTimeout(webhook.url, webhook.headers, payload)
 
-        const { data: { user } } = await supabase.auth.getUser()
-
-        const { error: logError } = await supabase.from('envios_log').insert({
+        const { error: logErr } = await supabase.from('envios_log').insert({
             deuda_id: deuda.id,
             cliente_id: deuda.cliente_id,
             webhook_id: webhook.id,
@@ -301,56 +324,56 @@ export async function intentarEnvioInmediato(deudaId: string): Promise<void> {
             respuesta_http: result.status || undefined,
             respuesta_body: result.body,
             enviado_por: 'cron',
-            agente_id: user?.id,
+            agente_id: deuda.agente_id ?? undefined,
         })
 
-        if (logError) {
-            console.error('[ENVIO_INMEDIATO] Error al insertar log:', logError.message)
-        }
+        if (logErr) console.error(`[ENVIO_INMEDIATO] Error guardando log:`, logErr.message)
 
         if (result.ok) {
-            console.log(`[ENVIO_INMEDIATO] Notificación enviada para deuda ${deudaId} (etapa: ${etapa})`)
+            console.log(`[ENVIO_INMEDIATO] ✅ Notificación enviada para deuda ${deudaId} (${etapa})`)
         } else {
-            console.error(`[ENVIO_INMEDIATO] Error webhook para deuda ${deudaId}: HTTP ${result.status}`)
+            console.error(`[ENVIO_INMEDIATO] ❌ Webhook falló: HTTP ${result.status} — ${result.body?.slice(0, 200)}`)
         }
     } catch (e) {
-        console.error('[ENVIO_INMEDIATO] Error:', e)
+        console.error('[ENVIO_INMEDIATO] Error fatal:', e)
     }
 }
 
-export async function enviarPendientesFueraDeHorario(): Promise<number> {
+export async function enviarPendientesSinNotificacion(): Promise<{ enviados: number; errores: number }> {
     const supabase = await createClient()
 
-    const { data: deudasSinEnvio, error } = await supabase
+    const { data: deudasActivas, error } = await supabase
         .from('deudas')
-        .select(`
-            id,
-            cliente:clientes(id, nombre, apellido, telefono, email),
-            agente:profiles(id, full_name),
-            configuracion:configuracion_recordatorio(*)
-        `)
+        .select('id')
         .eq('estado', 'activo')
         .eq('pausado', false)
         .neq('etapa', 'saldado')
 
-    if (error || !deudasSinEnvio) return 0
+    if (error || !deudasActivas) return { enviados: 0, errores: 0 }
 
-    let count = 0
-    for (const deuda of deudasSinEnvio) {
-        const { data: envioExiste } = await supabase
-            .from('envios_log')
-            .select('id')
-            .eq('deuda_id', deuda.id)
-            .limit(1)
+    const deudaIds = deudasActivas.map(d => d.id)
+    if (deudaIds.length === 0) return { enviados: 0, errores: 0 }
 
-        if (!envioExiste || envioExiste.length === 0) {
-            try {
-                await intentarEnvioInmediato(deuda.id)
-                count++
-            } catch {
-                // Continue with next
-            }
+    const { data: enviosExistentes } = await supabase
+        .from('envios_log')
+        .select('deuda_id')
+        .in('deuda_id', deudaIds)
+        .eq('tipo_destino', 'cliente')
+
+    const deudasConEnvio = new Set(enviosExistentes?.map(e => e.deuda_id) ?? [])
+    const deudasSinEnvio = deudaIds.filter(id => !deudasConEnvio.has(id))
+
+    let enviados = 0
+    let errores = 0
+
+    for (const deudaId of deudasSinEnvio) {
+        try {
+            await intentarEnvioInmediato(deudaId)
+            enviados++
+        } catch {
+            errores++
         }
     }
-    return count
+
+    return { enviados, errores }
 }

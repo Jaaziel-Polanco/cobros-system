@@ -11,6 +11,7 @@ export interface PermisosAgente {
     ver_logs: boolean
     ver_referencias: boolean
     ver_simulador: boolean
+    ver_tiendas_referidas: boolean
     editar_clientes: boolean
     eliminar_cuentas: boolean
     registrar_pagos: boolean
@@ -59,6 +60,7 @@ export const DEFAULT_PERMISOS_AGENTE: PermisosAgente = {
     ver_logs: true,
     ver_referencias: true,
     ver_simulador: false,
+    ver_tiendas_referidas: false,
     editar_clientes: true,
     eliminar_cuentas: false,
     registrar_pagos: true,
@@ -198,7 +200,7 @@ export interface EnvioLog {
 export interface WebhookPayload {
     evento: 'recordatorio_cobranza'
     timestamp: string
-    enviado_por: 'cron' | 'manual'
+    enviado_por: 'cron' | 'manual' | 'sistema'
     etapa: EtapaCobranza
     tipo_destino: 'cliente' | 'referencia'
     cliente: {

@@ -24,6 +24,7 @@ interface ClienteSimple {
     apellido: string
     telefono: string
     dni_ruc?: string | null
+    agente_id?: string | null
 }
 
 interface DeudaFormProps {
@@ -148,6 +149,19 @@ export function DeudaForm({ open, onClose, deuda, clientes, agentes, defaultClie
         }
     }, [open, deuda, defaultClienteId, reset])
 
+    const [autoAgente, setAutoAgente] = useState(false)
+
+    const autoAssignAgente = (cId: string) => {
+        if (deuda) return
+        const cliente = clientes.find(c => c.id === cId)
+        if (cliente?.agente_id) {
+            setValue('agente_id', cliente.agente_id)
+            setAutoAgente(true)
+        } else {
+            setAutoAgente(false)
+        }
+    }
+
     useEffect(() => {
         if (!deuda && montosActivos && montoOriginal && montoOriginal > 0) {
             setValue('saldo_pendiente', montoOriginal)
@@ -236,6 +250,7 @@ export function DeudaForm({ open, onClose, deuda, clientes, agentes, defaultClie
                                                     setValue('cliente_id', c.id)
                                                     setClienteDropdownOpen(false)
                                                     setClienteSearch('')
+                                                    autoAssignAgente(c.id)
                                                 }}
                                             >
                                                 <div className="text-sm text-white font-medium">{c.nombre} {c.apellido}</div>
@@ -383,7 +398,13 @@ export function DeudaForm({ open, onClose, deuda, clientes, agentes, defaultClie
                     {/* ── Agente ── */}
                     <div className="space-y-1.5">
                         <Label className="text-slate-300">Agente asignado</Label>
-                        <Select onValueChange={v => setValue('agente_id', v)} defaultValue={deuda?.agente_id ?? ''}>
+                        <Select
+                            onValueChange={v => {
+                                setValue('agente_id', v === 'none' ? '' : v)
+                                setAutoAgente(false)
+                            }}
+                            value={watch('agente_id') || 'none'}
+                        >
                             <SelectTrigger className="bg-slate-800 border-white/10 text-white">
                                 <SelectValue placeholder="Sin asignar" />
                             </SelectTrigger>
@@ -392,6 +413,9 @@ export function DeudaForm({ open, onClose, deuda, clientes, agentes, defaultClie
                                 {agentes.map(a => <SelectItem key={a.id} value={a.id}>{a.full_name}</SelectItem>)}
                             </SelectContent>
                         </Select>
+                        {autoAgente && !deuda && (
+                            <p className="text-xs text-[#5bbfed]">Asignado automáticamente del agente del cliente. Puedes cambiarlo.</p>
+                        )}
                     </div>
 
                     {/* ── Configuración de recordatorios ── */}

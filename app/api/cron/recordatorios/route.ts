@@ -153,10 +153,17 @@ export async function GET(req: NextRequest) {
             // Usar etapa y dias_atraso de la DB (ya actualizados por el RPC) — evita inconsistencia de timezone
             const etapaActual: EtapaCobranza = deuda.etapa as EtapaCobranza
             const diasAtraso: number = deuda.dias_atraso
+            const enviosDeuda = enviosPorDeuda.get(deuda.id) ?? []
+            const ultimoEnvioCliente = enviosDeuda
+                .filter(e => e.tipo_destino === 'cliente')
+                .sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())[0]?.sent_at ?? null
+            const esPrimerEnvioCliente = !ultimoEnvioCliente
 
             // Verificar si el cliente ya pagó este período
             const ultimoPago = pagosPorDeuda.get(deuda.id)
-            if (ultimoPago) {
+            // Regla: para la PRIMERA notificación no bloquear por pago reciente.
+            // Esto evita que deudas existentes sin historial de envíos se queden sin su primer recordatorio.
+            if (ultimoPago && !esPrimerEnvioCliente) {
                 const fechaPago = new Date(ultimoPago)
                 const ahora = new Date()
                 const diasDesdePago = (ahora.getTime() - fechaPago.getTime()) / (1000 * 60 * 60 * 24)
@@ -169,7 +176,8 @@ export async function GET(req: NextRequest) {
             }
 
             // Para preventivo, verificar si estamos dentro de la ventana de dias_antes_vencimiento
-            if (etapaActual === 'preventivo') {
+            // Para primer envío no aplicamos esta ventana para destrabar pendientes históricos.
+            if (etapaActual === 'preventivo' && !esPrimerEnvioCliente) {
                 if (!debeEnviarPreventivo(deuda.fecha_corte, config.dias_antes_vencimiento)) {
                     omitidos++
                     continue
@@ -177,11 +185,7 @@ export async function GET(req: NextRequest) {
             }
 
             // Anti-duplicado para envío al cliente
-            const enviosDeuda = enviosPorDeuda.get(deuda.id) ?? []
             const intervalo = getIntervaloEnvio(etapaActual, config)
-            const ultimoEnvioCliente = enviosDeuda
-                .filter(e => e.tipo_destino === 'cliente')
-                .sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())[0]?.sent_at ?? null
 
             if (!debeEnviar(ultimoEnvioCliente, intervalo)) {
                 omitidos++

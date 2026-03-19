@@ -43,7 +43,7 @@ const FREQ_CSS: Record<FrecuenciaPago, string> = {
     semanal: 'bg-cyan-500/15 text-cyan-300',
 }
 
-interface ClienteSimple { id: string; nombre: string; apellido: string; telefono: string; dni_ruc?: string | null }
+interface ClienteSimple { id: string; nombre: string; apellido: string; telefono: string; dni_ruc?: string | null; agente_id?: string | null }
 
 interface CuentasViewProps {
     deudas: (Deuda & { cliente?: ClienteSimple; agente?: { full_name: string } })[]

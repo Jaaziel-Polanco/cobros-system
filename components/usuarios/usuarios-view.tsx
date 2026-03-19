@@ -46,6 +46,7 @@ const PERMISOS_CONFIG: PermisoConfig[] = [
     { key: 'ver_logs', label: 'Registros', desc: 'Ver historial de envíos', icon: Eye, colorOn: '#6ee7b7' },
     { key: 'ver_referencias', label: 'Referencias', desc: 'Gestionar referencias de clientes', icon: BookUser, colorOn: '#fcd34d' },
     { key: 'ver_simulador', label: 'Simulador', desc: 'Usar el simulador de envíos', icon: FlaskConical, colorOn: '#f87171' },
+    { key: 'ver_tiendas_referidas', label: 'Tiendas Referidas', desc: 'Ver y gestionar tiendas referidoras', icon: CreditCard, colorOn: '#818cf8' },
     { key: 'editar_clientes', label: 'Editar Clientes', desc: 'Crear y editar clientes', icon: Pencil, colorOn: '#6ee7b7' },
     { key: 'crear_cuentas', label: 'Crear Cuentas', desc: 'Registrar nuevas cuentas/deudas', icon: CreditCard, colorOn: '#38bdf8' },
     { key: 'registrar_pagos', label: 'Registrar Pagos', desc: 'Registrar pagos de clientes', icon: DollarSign, colorOn: '#34d399' },

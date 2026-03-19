@@ -73,7 +73,8 @@ export async function createDeuda(formData: DeudaFormData) {
     revalidatePath('/cuentas')
     revalidatePath(`/clientes/${deuda.cliente_id}`)
 
-    intentarEnvioInmediato(deudaData.id).catch(() => {})
+    // Intentar envío inicial inmediatamente (sin depender del próximo cron)
+    await intentarEnvioInmediato(deudaData.id)
 
     return deudaData
 }

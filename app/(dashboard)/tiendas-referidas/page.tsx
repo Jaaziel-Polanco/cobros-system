@@ -7,7 +7,10 @@ import { PageHeader } from '@/components/layout/page-header'
 
 export default async function TiendasReferidasPage() {
     const profile = await getCurrentUser()
-    if (profile?.rol !== 'admin') redirect('/dashboard')
+    if (!profile) redirect('/login')
+    const isAdmin = profile.rol === 'admin'
+    const tienePermiso = isAdmin || !!(profile.permisos as Record<string, boolean> | null)?.ver_tiendas_referidas
+    if (!tienePermiso) redirect('/dashboard')
 
     const supabase = await createClient()
     const { data: tiendas } = await supabase

@@ -36,7 +36,7 @@ const ALL_NAV = [
     { href: '/referencias', label: 'Referencias', icon: BookUser, permiso: 'ver_referencias' },
     { href: '/plantillas', label: 'Plantillas', icon: FileText, permiso: 'ver_plantillas' },
     { href: '/webhooks', label: 'Webhooks', icon: Webhook, permiso: 'ver_webhooks' },
-    { href: '/tiendas-referidas', label: 'Tiendas (Referidos)', icon: Store, permiso: 'admin_only' },
+    { href: '/tiendas-referidas', label: 'Tiendas (Referidos)', icon: Store, permiso: 'ver_tiendas_referidas' },
     { href: '/usuarios', label: 'Usuarios', icon: UserCog, permiso: 'admin_only' },
     { href: '/logs', label: 'Registros', icon: ClipboardList, permiso: 'ver_logs' },
     { href: '/simulador', label: 'Simulador', icon: FlaskConical, permiso: 'ver_simulador' },

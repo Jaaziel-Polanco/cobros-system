@@ -31,6 +31,7 @@ const HOSTNAME = process.env.HOSTNAME ?? "0.0.0.0";
 
 const CRON_SCHEDULE = process.env.CRON_SCHEDULE ?? "0 8,18 * * *";
 const CRON_SECRET = process.env.CRON_SECRET;
+const CRON_RUN_ON_START = (process.env.CRON_RUN_ON_START ?? "true") === "true";
 
 const app = next({ dev: isDev, hostname: HOSTNAME, port: PORT });
 const handle = app.getRequestHandler();
@@ -142,8 +143,21 @@ app.prepare().then(() => {
       `[CRON] 📅 Programado: "${CRON_SCHEDULE}" (zona horaria: America/Santo_Domingo)`,
     );
     console.log(
+      `[CRON] ⚙️ Ejecución automática al iniciar: ${CRON_RUN_ON_START ? "activada" : "desactivada"}`,
+    );
+    console.log(
       '[CRON] 💡 Para probar ahora: ve a /simulador y usa "Disparar Cron ahora"\n',
     );
+
+    // Ejecuta una pasada al iniciar para cubrir deudas existentes
+    // sin esperar al próximo horario del cron.
+    if (CRON_RUN_ON_START) {
+      setTimeout(() => {
+        dispararRecordatorios().catch((err) => {
+          console.error("[CRON] ❌ Error en ejecución inicial:", err?.message ?? err);
+        });
+      }, 2000);
+    }
   });
 
   process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
