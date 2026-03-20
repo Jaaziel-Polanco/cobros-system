@@ -5,7 +5,7 @@ import { createClient as createAdminClient } from '@supabase/supabase-js'
 import { revalidatePath } from 'next/cache'
 import { renderTemplate, formatMonto, formatFecha } from '@/lib/utils/template-renderer'
 import { WebhookPayload, EtapaCobranza } from '@/lib/types'
-import { debeEnviarPreventivo } from '@/lib/utils/cobranza-engine'
+import { debeEnviarPreventivo, normalizarConfiguracionRecordatorio } from '@/lib/utils/cobranza-engine'
 
 export async function getLogs(filters?: {
     clienteId?: string
@@ -62,6 +62,10 @@ async function fetchWebhookConTimeout(url: string, headers: Record<string, strin
     }
 }
 
+/**
+ * Envío manual desde la UI: no aplica la ventana de días antes del vencimiento (override del usuario).
+ * El cron y `intentarEnvioInmediato` sí respetan preventivo siempre.
+ */
 export async function enviarRecordatorioManual(deudaId: string) {
     const supabase = await createClient()
 
@@ -231,8 +235,9 @@ export async function intentarEnvioInmediato(deudaId: string): Promise<void> {
             return
         }
 
-        if (etapa === 'preventivo' && config) {
-            if (!debeEnviarPreventivo(deuda.fecha_corte, config.dias_antes_vencimiento)) {
+        const conf = normalizarConfiguracionRecordatorio(config)
+        if (etapa === 'preventivo') {
+            if (!debeEnviarPreventivo(deuda.fecha_corte, conf.dias_antes_vencimiento)) {
                 console.log(`[ENVIO_INMEDIATO] Preventivo fuera de ventana, omitida`)
                 return
             }

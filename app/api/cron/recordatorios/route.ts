@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient as createAdminClient } from '@supabase/supabase-js'
 import { renderTemplate, formatMonto, formatFecha } from '@/lib/utils/template-renderer'
-import { debeEnviar, getIntervaloEnvio, debeEnviarPreventivo } from '@/lib/utils/cobranza-engine'
+import {
+    debeEnviar,
+    getIntervaloEnvio,
+    debeEnviarPreventivo,
+    normalizarConfiguracionRecordatorio,
+} from '@/lib/utils/cobranza-engine'
 import { WebhookPayload, EtapaCobranza, FrecuenciaPago } from '@/lib/types'
 import { verificarCronSecret } from '@/lib/utils/auth'
 
@@ -147,8 +152,7 @@ export async function GET(req: NextRequest) {
         const tareasEnvio: TareaEnvio[] = []
 
         for (const deuda of deudas ?? []) {
-            const config = deuda.configuracion
-            if (!config) continue
+            const config = normalizarConfiguracionRecordatorio(deuda.configuracion)
 
             // Usar etapa y dias_atraso de la DB (ya actualizados por el RPC) — evita inconsistencia de timezone
             const etapaActual: EtapaCobranza = deuda.etapa as EtapaCobranza
@@ -175,9 +179,10 @@ export async function GET(req: NextRequest) {
                 }
             }
 
-            // Para preventivo, verificar si estamos dentro de la ventana de dias_antes_vencimiento
-            // Para primer envío no aplicamos esta ventana para destrabar pendientes históricos.
-            if (etapaActual === 'preventivo' && !esPrimerEnvioCliente) {
+            // Preventivo: SIEMPRE respetar la ventana (días antes del vencimiento), también en el primer envío.
+            // El bypass de "primer envío" solo aplica al bloqueo por pago reciente arriba, no aquí — si no,
+            // se enviarían recordatorios preventivos semanas antes del corte (bug visto en producción).
+            if (etapaActual === 'preventivo') {
                 if (!debeEnviarPreventivo(deuda.fecha_corte, config.dias_antes_vencimiento)) {
                     omitidos++
                     continue
