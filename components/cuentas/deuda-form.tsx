@@ -188,7 +188,21 @@ export function DeudaForm({ open, onClose, deuda, clientes, agentes, defaultClie
                 reset()
                 onClose()
             } catch (e: unknown) {
-                toast.error(e instanceof Error ? e.message : 'Error al guardar')
+                const message = e instanceof Error ? e.message : 'Error al guardar'
+                const isServerActionDesync =
+                    typeof message === 'string'
+                    && (
+                        message.includes('was not found on the server')
+                        || message.includes('failed-to-find-server-action')
+                    )
+
+                if (isServerActionDesync) {
+                    toast.error('Se actualizó el sistema. Recargando para sincronizar...')
+                    setTimeout(() => window.location.reload(), 1200)
+                    return
+                }
+
+                toast.error(message)
             }
         })
     }
