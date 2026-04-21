@@ -93,23 +93,32 @@ export async function GET(req: NextRequest) {
 
         if (deudasError) throw deudasError
 
-        // Cargar últimos envíos por deuda (solo los recientes, no todo el historial)
+        // Último envío por deuda (por tipo_destino) — vía RPC con DISTINCT ON.
+        // ANTES: .limit(deudaIds.length * 5) era un límite GLOBAL, no por grupo, así que
+        // las deudas chatty acaparaban el cupo y el último envío de otras quedaba fuera
+        // → ultimoEnvioCliente=null → el cron reenviaba 2-3 veces al día.
         const deudaIds = deudas?.map(d => d.id) ?? []
-        let enviosPorDeuda = new Map<string, Array<{ sent_at: string; tipo_destino: string; referencia_id: string | null }>>()
+        const ultimoEnvioClientePorDeuda = new Map<string, string>()
 
         if (deudaIds.length > 0) {
-            const { data: enviosRecientes } = await supabase
-                .from('envios_log')
-                .select('deuda_id, sent_at, tipo_destino, referencia_id')
-                .in('deuda_id', deudaIds)
-                .order('sent_at', { ascending: false })
-                .limit(deudaIds.length * 5)
-
-            enviosRecientes?.forEach(e => {
-                const arr = enviosPorDeuda.get(e.deuda_id) || []
-                arr.push(e)
-                enviosPorDeuda.set(e.deuda_id, arr)
-            })
+            type UltimoEnvioRow = {
+                deuda_id: string
+                tipo_destino: string
+                ultimo_sent_at: string
+            }
+            const { data, error: ultimosErr } = await supabase.rpc(
+                'ultimos_envios_por_deuda',
+                { p_deuda_ids: deudaIds }
+            )
+            if (ultimosErr) {
+                console.error('[CRON] Error obteniendo últimos envíos:', ultimosErr.message)
+            }
+            const ultimos = (data ?? []) as UltimoEnvioRow[]
+            for (const r of ultimos) {
+                if (r.tipo_destino === 'cliente') {
+                    ultimoEnvioClientePorDeuda.set(r.deuda_id, r.ultimo_sent_at)
+                }
+            }
         }
 
         // 2b. Cargar pagos recientes para determinar si ya pagó este período
@@ -157,10 +166,7 @@ export async function GET(req: NextRequest) {
             // Usar etapa y dias_atraso de la DB (ya actualizados por el RPC) — evita inconsistencia de timezone
             const etapaActual: EtapaCobranza = deuda.etapa as EtapaCobranza
             const diasAtraso: number = deuda.dias_atraso
-            const enviosDeuda = enviosPorDeuda.get(deuda.id) ?? []
-            const ultimoEnvioCliente = enviosDeuda
-                .filter(e => e.tipo_destino === 'cliente')
-                .sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())[0]?.sent_at ?? null
+            const ultimoEnvioCliente = ultimoEnvioClientePorDeuda.get(deuda.id) ?? null
             const esPrimerEnvioCliente = !ultimoEnvioCliente
 
             // Verificar si el cliente ya pagó este período
