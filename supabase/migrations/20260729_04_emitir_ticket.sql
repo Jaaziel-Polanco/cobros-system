@@ -148,3 +148,23 @@ BEGIN
                               'ticket', to_jsonb(v_ticket));
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions;
+
+-- ─── Endurecimiento: restringir quién puede ejecutar el RPC ───
+-- Postgres concede EXECUTE a PUBLIC (que incluye el rol `anon` de
+-- Supabase) en toda función nueva por defecto. emitir_ticket es
+-- SECURITY DEFINER y devuelve el snapshot completo del boleto —incluye
+-- el dni_ruc del cliente—, así que sin este REVOKE cualquiera con la
+-- clave anónima podría invocarla directamente: quemaría números del
+-- sorteo activo compartido, leería datos personales, y se saltaría por
+-- completo los chequeos de propiedad de cliente que viven en
+-- lib/actions/tickets.ts (esta función, al ser SECURITY DEFINER, no
+-- pasa por RLS). Mismo patrón de REVOKE/GRANT que establece
+-- supabase/migrations/fix_anti_duplicado_envios.sql:41-42 (los mismos
+-- dos roles: authenticated y service_role, sin anon).
+REVOKE ALL ON FUNCTION public.emitir_ticket(
+    UUID, UUID, UUID, TEXT, TEXT, UUID
+) FROM PUBLIC;
+
+GRANT EXECUTE ON FUNCTION public.emitir_ticket(
+    UUID, UUID, UUID, TEXT, TEXT, UUID
+) TO authenticated, service_role;

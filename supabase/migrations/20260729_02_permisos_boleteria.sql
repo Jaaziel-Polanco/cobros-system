@@ -1,6 +1,21 @@
 -- ══════════════════════════════════════════════════════════════
 -- Migración: Permisos de boletería, helper SQL y policies RLS
 -- ══════════════════════════════════════════════════════════════
+--
+-- AMPLIACIÓN POSTERIOR (revisión de la Tarea 5, mismo día — esta
+-- migración nunca se había ejecutado contra ninguna base real):
+-- faltaban las policies de UPDATE sobre tickets e INSERT sobre
+-- ticket_eventos para agentes. Hasta ahora la única policy de
+-- escritura de ambas tablas era "admin acceso total"; sin una policy
+-- adicional para agentes, anularTicket() en lib/actions/tickets.ts
+-- (que escribe con el cliente ligado a sesión, no con un RPC
+-- SECURITY DEFINER) habría fallado SIEMPRE para cualquier agente no
+-- admin, no solo en una carrera rara — y ninguna Server Action de
+-- agente habría podido insertar en ticket_eventos tampoco (rompiendo
+-- también enviarTicketWhatsApp de la Tarea 7). Este archivo ya es
+-- idempotente (DROP POLICY IF EXISTS antes de cada CREATE POLICY), así
+-- que volver a ejecutarlo completo es seguro. Las policies nuevas
+-- están junto a las de SELECT de cada tabla, más abajo.
 
 -- ─── Helper: consultar un permiso granular ────────────────────
 -- NOTA: Reemplaza la función anterior para incluir los 5 permisos nuevos
@@ -147,6 +162,31 @@ CREATE POLICY "tickets: agente ve los de sus clientes"
     )
   );
 
+-- anularTicket() en lib/actions/tickets.ts escribe con el cliente ligado
+-- a sesión (no con un RPC SECURITY DEFINER), así que necesita su propia
+-- policy de UPDATE aquí. La emisión (emitir_ticket) no la necesita: corre
+-- como SECURITY DEFINER y nunca pasa por RLS. El WITH CHECK repite la
+-- misma condición que el USING para impedir que el agente, en el mismo
+-- UPDATE, reasigne el boleto (cambiando cliente_id) a un cliente que no
+-- es suyo: la fila resultante también debe pertenecer a uno de sus clientes.
+DROP POLICY IF EXISTS "tickets: agente anula los de sus clientes" ON public.tickets;
+CREATE POLICY "tickets: agente anula los de sus clientes"
+  ON public.tickets FOR UPDATE
+  USING (
+    public.tiene_permiso('generar_ticket_manual')
+    AND EXISTS (
+      SELECT 1 FROM public.clientes c
+      WHERE c.id = cliente_id AND c.agente_id = auth.uid()
+    )
+  )
+  WITH CHECK (
+    public.tiene_permiso('generar_ticket_manual')
+    AND EXISTS (
+      SELECT 1 FROM public.clientes c
+      WHERE c.id = cliente_id AND c.agente_id = auth.uid()
+    )
+  );
+
 -- ─── Policies: ticket_eventos ─────────────────────────────────
 -- El historial de eventos sigue la visibilidad del boleto: solo visible
 -- si el agente tiene permiso ver_tickets Y el boleto pertenece a sus clientes.
@@ -160,6 +200,24 @@ DROP POLICY IF EXISTS "ticket_eventos: sigue la visibilidad del boleto" ON publi
 CREATE POLICY "ticket_eventos: sigue la visibilidad del boleto"
   ON public.ticket_eventos FOR SELECT
   USING (
+    public.tiene_permiso('ver_tickets')
+    AND EXISTS (
+      SELECT 1 FROM public.tickets t
+      JOIN public.clientes c ON c.id = t.cliente_id
+      WHERE t.id = ticket_id AND c.agente_id = auth.uid()
+    )
+  );
+
+-- Igual razón que la policy de UPDATE de tickets: anularTicket() (y
+-- enviarTicketWhatsApp en la Tarea 7) insertan el evento con el cliente
+-- de sesión, así que sin esta policy ningún agente podría dejar rastro
+-- de sus propias anulaciones o envíos — la única policy de escritura
+-- existente era "admin acceso total". No hace falta comprobar el estado
+-- del boleto aquí: basta con que el ticket_id sea de un cliente suyo.
+DROP POLICY IF EXISTS "ticket_eventos: agente registra eventos de sus clientes" ON public.ticket_eventos;
+CREATE POLICY "ticket_eventos: agente registra eventos de sus clientes"
+  ON public.ticket_eventos FOR INSERT
+  WITH CHECK (
     public.tiene_permiso('ver_tickets')
     AND EXISTS (
       SELECT 1 FROM public.tickets t

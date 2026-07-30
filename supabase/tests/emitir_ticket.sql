@@ -68,10 +68,16 @@ BEGIN
   ASSERT (v_res -> 'ticket' -> 'snapshot' -> 'sorteo' ->> 'nombre') = 'Sorteo de prueba',
          'Caso 4: el snapshot debe incluir el sorteo';
 
-  -- Caso 5: cada emisión registra su evento
+  -- Caso 5: cada emisión registra su evento (y cada NO-emisión, ninguno).
+  -- Desglose de la cuenta esperada:
+  --   Caso 1 emite 1 (automático, sin sorteo)      → 1
+  --   Caso 2 es idempotente, no emite nada          → 0
+  --   Caso 3 se rechaza por falta de motivo         → 0
+  --   Caso 4 emite 2 (manual x2, con sorteo activo) → 2
+  --   Total                                          = 3
   SELECT count(*) INTO v_tickets
   FROM public.ticket_eventos WHERE tipo = 'emitido';
-  ASSERT v_tickets = 4, 'Caso 5: debieron registrarse 4 eventos de emisión';
+  ASSERT v_tickets = 3, 'Caso 5: debieron registrarse 3 eventos de emisión';
 
   RAISE NOTICE 'TODAS LAS VERIFICACIONES PASARON';
 END $$;

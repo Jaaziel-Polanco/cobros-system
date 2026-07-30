@@ -237,3 +237,19 @@ BEGIN
     );
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
+-- ─── Endurecimiento: restringir quién puede ejecutar el RPC ───
+-- Postgres concede EXECUTE a PUBLIC (que incluye el rol `anon` de
+-- Supabase) en toda función nueva por defecto. Sin este REVOKE
+-- explícito, cualquiera con la clave anónima podría invocar este RPC
+-- directamente y saltarse cualquier chequeo que viva en la Server
+-- Action que lo envuelve (lib/actions/deudas.ts). Mismo patrón de
+-- REVOKE/GRANT que establece supabase/migrations/fix_anti_duplicado_envios.sql:41-42
+-- (los mismos dos roles: authenticated y service_role, sin anon).
+REVOKE ALL ON FUNCTION public.registrar_pago_atomico(
+    UUID, NUMERIC, TEXT, TEXT, UUID, BOOLEAN
+) FROM PUBLIC;
+
+GRANT EXECUTE ON FUNCTION public.registrar_pago_atomico(
+    UUID, NUMERIC, TEXT, TEXT, UUID, BOOLEAN
+) TO authenticated, service_role;

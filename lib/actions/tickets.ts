@@ -8,7 +8,7 @@ import {
     AnularTicketSchema,
     type TicketManualFormData,
 } from '@/lib/validations/tickets'
-import type { Ticket, TicketEvento, Pago } from '@/lib/types'
+import type { Ticket, TicketEvento, Pago, Rol } from '@/lib/types'
 
 /** Lee el perfil del usuario de la sesión. Lanza si no hay sesión. */
 async function perfilActual() {
@@ -26,6 +26,38 @@ async function perfilActual() {
     return { supabase, user, profile, permisos: getPermisos(profile) }
 }
 
+/**
+ * Verifica que el usuario actual pueda operar sobre el cliente dado antes
+ * de emitir un boleto en su nombre. El admin puede sobre cualquier cliente;
+ * un agente, solo sobre los que tiene asignados (clientes.agente_id).
+ *
+ * Hace falta este chequeo aquí, en TypeScript, porque emitir_ticket() es
+ * SECURITY DEFINER: corre con los privilegios del dueño de la función y no
+ * pasa por las policies RLS de `clientes` ni de `tickets`. Sin esto,
+ * cualquier agente podría emitir un boleto —y quemar un número del sorteo
+ * activo compartido— a nombre del cliente de otro agente, con el único
+ * requisito de conocer su UUID.
+ */
+async function verificarPropiedadCliente(
+    supabase: Awaited<ReturnType<typeof createClient>>,
+    rol: Rol,
+    userId: string,
+    clienteId: string,
+): Promise<void> {
+    if (rol === 'admin') return
+
+    const { data: cliente, error } = await supabase
+        .from('clientes')
+        .select('agente_id')
+        .eq('id', clienteId)
+        .single()
+
+    if (error || !cliente) throw new Error('Cliente no encontrado')
+    if (cliente.agente_id !== userId) {
+        throw new Error('No tienes permiso para operar sobre este cliente')
+    }
+}
+
 // ─── EMISIÓN ──────────────────────────────────────────────────
 
 /**
@@ -35,7 +67,15 @@ async function perfilActual() {
 export async function emitirTicketDePago(
     pagoId: string,
 ): Promise<{ ticket: Ticket; yaExistia: boolean }> {
-    const { supabase, user } = await perfilActual()
+    const { supabase, user, profile, permisos } = await perfilActual()
+
+    // Mismo permiso que emitirTicketManual: ambas acciones tienen el mismo
+    // efecto (crear un Ticket y consumir un número del sorteo activo), la
+    // única diferencia es qué las dispara. Sin este chequeo, un agente sin
+    // el permiso de boletos podía igual emitir uno con solo registrar un pago.
+    if (!permisos.generar_ticket_manual) {
+        throw new Error('No tienes permiso para emitir boletos')
+    }
 
     const { data: pago, error: pagoError } = await supabase
         .from('pagos')
@@ -44,6 +84,8 @@ export async function emitirTicketDePago(
         .single()
 
     if (pagoError || !pago) throw new Error('Pago no encontrado')
+
+    await verificarPropiedadCliente(supabase, profile.rol, user.id, pago.cliente_id)
 
     const { data, error } = await supabase.rpc('emitir_ticket', {
         p_cliente_id: pago.cliente_id,
@@ -67,13 +109,15 @@ export async function emitirTicketDePago(
 export async function emitirTicketManual(
     input: TicketManualFormData,
 ): Promise<{ ticket: Ticket }> {
-    const { supabase, user, permisos } = await perfilActual()
+    const { supabase, user, profile, permisos } = await perfilActual()
 
     if (!permisos.generar_ticket_manual) {
         throw new Error('No tienes permiso para generar boletos manuales')
     }
 
     const validado = TicketManualSchema.parse(input)
+
+    await verificarPropiedadCliente(supabase, profile.rol, user.id, validado.cliente_id)
 
     const { data, error } = await supabase.rpc('emitir_ticket', {
         p_cliente_id: validado.cliente_id,
