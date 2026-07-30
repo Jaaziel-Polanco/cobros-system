@@ -46,8 +46,34 @@ export function permitir(
     return actual.conteo <= limite
 }
 
-/** IP del peticionario, mirando primero las cabeceras del proxy inverso. */
+/**
+ * Tope agregado, sin clave: es el freno que sobrevive a la falsificación de
+ * `X-Forwarded-For` (ver `ipDe`). El cupo por IP es una cortesía para no
+ * penalizar a un usuario legítimo por los demás; este es el que de verdad
+ * protege el proceso, porque no depende de nada que controle el cliente.
+ * Se implementa reutilizando `permitir` con una clave constante compartida
+ * por todas las peticiones.
+ */
+export function permitirGlobal(limite = 120, ventanaMs = 60_000): boolean {
+    return permitir('__global__', limite, ventanaMs)
+}
+
+/**
+ * IP del peticionario, mirando las cabeceras del proxy inverso SOLO si
+ * `TRUST_PROXY_HEADERS=true`. Por defecto está desactivado a propósito:
+ * `X-Forwarded-For` / `X-Real-IP` las manda el cliente y, si no hay un proxy
+ * de confianza delante que las reescriba (el Dockerfile de este proyecto
+ * expone Node directamente, sin uno), un atacante puede falsificarlas para
+ * esquivar el límite por IP con una cabecera distinta en cada petición.
+ * Con la confianza desactivada, todas las peticiones caen bajo la misma
+ * clave constante ('sin-proxy'): el cupo por IP se degrada a un cupo
+ * compartido, y es `permitirGlobal` (que no depende de ninguna cabecera)
+ * quien sigue frenando de verdad.
+ */
 export function ipDe(req: Request): string {
+    if (process.env.TRUST_PROXY_HEADERS !== 'true') {
+        return 'sin-proxy'
+    }
     return (
         req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
         req.headers.get('x-real-ip') ||
