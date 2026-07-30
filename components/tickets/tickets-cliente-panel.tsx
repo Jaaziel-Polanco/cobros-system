@@ -26,11 +26,22 @@ interface Props {
     tieneTelefono: boolean
     tickets: Ticket[]
     pagosSinTicket: PagoSinBoleto[]
+    /** Gatea "Boleto manual" y "Anular" (permiso `generar_ticket_manual`: crear o
+     *  destruir boletos fuera del flujo normal de cobro). */
     puedeGenerar: boolean
+    /** Gatea el aviso de "pagos sin boleto" y su botón "Emitir boleto" (permiso
+     *  `ver_tickets`, NO `generar_ticket_manual`). Recuperar el boleto de un pago
+     *  ya cobrado es parte del flujo normal de cobro, no "crear boletos de la
+     *  nada": el servidor gatea emitirTicketDePago con ver_tickets a propósito.
+     *  Si este bloque usara `puedeGenerar`, a un agente con ver_tickets pero sin
+     *  generar_ticket_manual se le ocultaría el aviso y sus boletos pendientes
+     *  se perderían en silencio. No lo colapses en un solo booleano. */
+    puedeEmitirDePago: boolean
 }
 
 export function TicketsClientePanel({
     clienteId, clienteNombre, tieneTelefono, tickets, pagosSinTicket, puedeGenerar,
+    puedeEmitirDePago,
 }: Props) {
     const [manualAbierto, setManualAbierto] = useState(false)
     const [pendiente, startTransition] = useTransition()
@@ -89,7 +100,7 @@ export function TicketsClientePanel({
                 )}
             </div>
 
-            {pagosSinTicket.length > 0 && puedeGenerar && (
+            {pagosSinTicket.length > 0 && puedeEmitirDePago && (
                 <div className="mb-4 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3">
                     <p className="flex items-center gap-2 text-xs font-medium text-amber-300">
                         <AlertCircle className="h-3.5 w-3.5" />
