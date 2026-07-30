@@ -50,6 +50,17 @@
 |---|---|
 | `lib/actions/tickets.ts` | Acción de asignar boletos huérfanos a un sorteo |
 | `components/tickets/tickets-view.tsx` | Acción masiva sobre huérfanos |
+| `components/layout/app-sidebar.tsx` | **Volver a añadir** la entrada `/sorteos` |
+
+> **Nota:** la entrada `/sorteos` del menú lateral se creó en el Plan 1 y se **retiró** en la
+> revisión final de esa rama, porque apuntaba a una ruta inexistente y los administradores
+> recibían un 404. La Tarea 4 de este plan debe volver a añadirla, junto con la ruta:
+>
+> ```ts
+>     { href: '/sorteos', label: 'Sorteos', icon: Gift, permiso: 'ver_sorteos' },
+> ```
+>
+> El icono `Gift` viene de `lucide-react`.
 
 ---
 
