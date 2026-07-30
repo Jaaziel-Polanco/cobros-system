@@ -28,34 +28,74 @@ export function TicketConfirmDialog({
 }: Props) {
     const [pendiente, startTransition] = useTransition()
     const [emitido, setEmitido] = useState<Ticket | null>(null)
+    const [envioError, setEnvioError] = useState<string | null>(null)
 
     const hayTelefono = telefonoValido(clienteTelefono)
 
     const cerrar = () => {
         setEmitido(null)
+        setEnvioError(null)
         onCerrar()
     }
 
+    // Emisión y envío son dos fallos distintos: el boleto puede haberse
+    // generado con éxito aunque el webhook de WhatsApp falle (n8n caído,
+    // sin plantilla activa, etc.). Reportar ambos bajo el mismo mensaje
+    // ("Error al generar el boleto") es falso cuando lo único que falló fue
+    // el envío, y además el pago ya está comprometido antes de abrir este
+    // modal: el agente necesita el número del boleto de todos modos.
     const emitir = (enviar: boolean) => {
         if (!pagoId) return
         startTransition(async () => {
+            let ticket: Ticket
             try {
-                const { ticket, yaExistia } = await emitirTicketDePago(pagoId)
+                const res = await emitirTicketDePago(pagoId)
+                ticket = res.ticket
                 setEmitido(ticket)
+                setEnvioError(null)
 
                 toast.success(
-                    yaExistia
+                    res.yaExistia
                         ? `Este pago ya tenía el boleto ${ticket.numero_formateado}`
                         : `Boleto ${ticket.numero_formateado} generado`,
                 )
+            } catch (e: unknown) {
+                toast.error(e instanceof Error ? e.message : 'No se pudo generar el boleto')
+                return
+            }
 
-                if (enviar) {
+            if (enviar) {
+                try {
                     await enviarTicketWhatsApp(ticket.id)
+                    setEnvioError(null)
                     toast.success('Boleto enviado por WhatsApp')
                     cerrar()
+                } catch (e: unknown) {
+                    const motivo = e instanceof Error ? e.message : 'Error desconocido'
+                    setEnvioError(motivo)
+                    toast.error(
+                        `Boleto ${ticket.numero_formateado} generado, pero no se pudo enviar por WhatsApp: ${motivo}`,
+                    )
                 }
+            }
+        })
+    }
+
+    // Reintento de solo-envío: no vuelve a emitir (emitirTicketDePago ya es
+    // idempotente, pero no hace falta ni tocarlo) — solo reintenta el
+    // webhook contra el boleto que ya existe.
+    const reintentarEnvio = () => {
+        if (!emitido) return
+        startTransition(async () => {
+            try {
+                await enviarTicketWhatsApp(emitido.id)
+                setEnvioError(null)
+                toast.success('Boleto enviado por WhatsApp')
+                cerrar()
             } catch (e: unknown) {
-                toast.error(e instanceof Error ? e.message : 'Error al generar el boleto')
+                const motivo = e instanceof Error ? e.message : 'Error desconocido'
+                setEnvioError(motivo)
+                toast.error(`No se pudo enviar por WhatsApp: ${motivo}`)
             }
         })
     }
@@ -91,6 +131,13 @@ export function TicketConfirmDialog({
                     </p>
                 )}
 
+                {emitido && envioError && (
+                    <p className="rounded-lg bg-red-500/15 px-3 py-2 text-xs text-red-300">
+                        El boleto <strong>{emitido.numero_formateado}</strong> se generó, pero no
+                        se pudo enviar por WhatsApp: {envioError}
+                    </p>
+                )}
+
                 <div className="space-y-2">
                     <Button
                         className="w-full justify-start gap-2"
@@ -101,6 +148,18 @@ export function TicketConfirmDialog({
                         <MessageCircle className="h-4 w-4" />
                         Generar y enviar por WhatsApp
                     </Button>
+
+                    {emitido && envioError && hayTelefono && (
+                        <Button
+                            className="w-full justify-start gap-2"
+                            disabled={pendiente}
+                            onClick={reintentarEnvio}
+                            style={{ background: 'linear-gradient(135deg,#25D366,#128C7E)' }}
+                        >
+                            <MessageCircle className="h-4 w-4" />
+                            Reintentar envío por WhatsApp
+                        </Button>
+                    )}
 
                     <Button
                         variant="outline"
