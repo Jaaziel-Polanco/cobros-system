@@ -25,6 +25,7 @@ import {
     Store,
     Ticket,
     Gift,
+    Settings,
 } from 'lucide-react'
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
@@ -45,6 +46,7 @@ const ALL_NAV = [
     { href: '/usuarios', label: 'Usuarios', icon: UserCog, permiso: 'admin_only' },
     { href: '/logs', label: 'Registros', icon: ClipboardList, permiso: 'ver_logs' },
     { href: '/simulador', label: 'Simulador', icon: FlaskConical, permiso: 'ver_simulador' },
+    { href: '/configuracion/tickets', label: 'Config. Boletos', icon: Settings, permiso: 'admin_only' },
 ]
 
 interface AppSidebarProps {

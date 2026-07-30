@@ -11,7 +11,7 @@ import {
 import type { Ticket, TicketEvento, Pago, Rol } from '@/lib/types'
 import { renderTemplate } from '@/lib/utils/template-renderer'
 import { generarTicketPdf } from '@/lib/pdf/ticket-document'
-import { formatearFechaHoraRD } from '@/lib/utils/fecha-rd'
+import { formatearFechaHoraRD, rangoRDaUTC } from '@/lib/utils/fecha-rd'
 import type { TicketWebhookPayload, ConfiguracionTicket } from '@/lib/types'
 
 /** Lee el perfil del usuario de la sesión. Lanza si no hay sesión. */
@@ -201,6 +201,44 @@ export async function anularTicket(ticketId: string, motivo: string): Promise<vo
 }
 
 // ─── CONSULTAS ────────────────────────────────────────────────
+
+export interface FiltrosTickets {
+    busqueda?: string
+    estado?: 'valido' | 'anulado'
+    origen?: 'automatico' | 'manual'
+    sorteoId?: string
+    soloHuerfanos?: boolean
+    desde?: string   // fecha RD 'YYYY-MM-DD'
+    hasta?: string   // fecha RD 'YYYY-MM-DD'
+}
+
+export async function getTickets(filtros: FiltrosTickets = {}): Promise<Ticket[]> {
+    const supabase = await createClient()
+
+    let query = supabase
+        .from('tickets')
+        .select('*, cliente:clientes(id, nombre, apellido, telefono), sorteo:sorteos(id, nombre)')
+        .order('emitido_at', { ascending: false })
+        .limit(300)
+
+    if (filtros.estado) query = query.eq('estado', filtros.estado)
+    if (filtros.origen) query = query.eq('origen', filtros.origen)
+    if (filtros.sorteoId) query = query.eq('sorteo_id', filtros.sorteoId)
+    if (filtros.soloHuerfanos) query = query.is('sorteo_id', null)
+
+    if (filtros.desde && filtros.hasta) {
+        const { desdeISO, hastaISO } = rangoRDaUTC(filtros.desde, filtros.hasta)
+        query = query.gte('emitido_at', desdeISO).lte('emitido_at', hastaISO)
+    }
+
+    if (filtros.busqueda?.trim()) {
+        query = query.ilike('numero_formateado', `%${filtros.busqueda.trim()}%`)
+    }
+
+    const { data, error } = await query
+    if (error) throw new Error(error.message)
+    return (data ?? []) as Ticket[]
+}
 
 export async function getTicketsCliente(clienteId: string): Promise<Ticket[]> {
     const supabase = await createClient()
