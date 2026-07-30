@@ -715,6 +715,7 @@ git commit -m "feat: construcción de la tirilla ESC/POS del boleto"
 - Create: `app/(dashboard)/estaciones/page.tsx`
 - Modify: `components/layout/app-sidebar.tsx`
 - Modify: `components/usuarios/usuarios-view.tsx`
+- Modify: `lib/types/index.ts` (interfaz `Profile`)
 
 **Interfaces:**
 - Consumes: tablas `sucursales` y `estaciones_impresion` (Plan 1, Tarea 2)
@@ -727,7 +728,20 @@ git commit -m "feat: construcción de la tirilla ESC/POS del boleto"
   - `regenerarTokenEstacion(id): Promise<{ tokenPlano: string }>`
   - `asignarSucursalUsuario(userId, sucursalId | null)`
 
-- [ ] **Paso 1: Crear las Server Actions**
+- [ ] **Paso 1: Completar la interfaz `Profile`**
+
+La migración del Plan 1 añadió `profiles.sucursal_id`, pero la interfaz de TypeScript se
+quedó sin ese campo. Añádelo en `lib/types/index.ts`, dentro de `interface Profile`, después
+de `permisos`:
+
+```ts
+    sucursal_id?: string | null
+```
+
+Es opcional porque los perfiles creados antes de la migración no la traen y porque varias
+consultas del repo seleccionan solo un subconjunto de columnas.
+
+- [ ] **Paso 2: Crear las Server Actions**
 
 Crea `lib/actions/estaciones.ts`:
 
@@ -941,7 +955,7 @@ export async function asignarSucursalUsuario(
 }
 ```
 
-- [ ] **Paso 2: Crear la interfaz de administración**
+- [ ] **Paso 3: Crear la interfaz de administración**
 
 Crea `components/estaciones/estaciones-view.tsx`, componente de cliente que recibe
 `sucursales: Sucursal[]` y `estaciones: EstacionImpresion[]`.
@@ -968,7 +982,7 @@ Estructura, siguiendo el patrón visual de `components/webhooks/webhooks-view.ts
    `Dialog` con un aviso: *"Cópialo ahora. No se puede volver a ver."* y un botón de copiar
    al portapapeles.
 
-- [ ] **Paso 3: Crear la página**
+- [ ] **Paso 4: Crear la página**
 
 Crea `app/(dashboard)/estaciones/page.tsx`:
 
@@ -1007,7 +1021,7 @@ export default async function EstacionesPage() {
 }
 ```
 
-- [ ] **Paso 4: Añadir la entrada al sidebar**
+- [ ] **Paso 5: Añadir la entrada al sidebar**
 
 En `components/layout/app-sidebar.tsx`, añade a `ALL_NAV`:
 
@@ -1017,7 +1031,7 @@ En `components/layout/app-sidebar.tsx`, añade a `ALL_NAV`:
 
 Importa `Printer` de `lucide-react`.
 
-- [ ] **Paso 5: Añadir el selector de sucursal en usuarios**
+- [ ] **Paso 6: Añadir el selector de sucursal en usuarios**
 
 En `components/usuarios-view.tsx` (`components/usuarios/usuarios-view.tsx`), añade en el
 formulario de edición de cada usuario un `Select` de sucursal que llame a
@@ -1027,7 +1041,7 @@ asignada", y con ella el usuario no podrá imprimir.
 La página `app/(dashboard)/usuarios/page.tsx` debe pasar `sucursales` como prop; obténlas con
 `getSucursales()`.
 
-- [ ] **Paso 6: Verificar**
+- [ ] **Paso 7: Verificar**
 
 Ejecuta: `npx tsc --noEmit`
 Esperado: sin errores nuevos.
@@ -1042,10 +1056,10 @@ Con `npm run dev`, entrando como admin:
 5. En `/usuarios`, asigna la sucursal a tu propio usuario.
 6. El indicador de conexión debe decir "Sin conexión" — todavía no existe el agente.
 
-- [ ] **Paso 7: Commit**
+- [ ] **Paso 8: Commit**
 
 ```bash
-git add lib/actions/estaciones.ts components/estaciones/estaciones-view.tsx "app/(dashboard)/estaciones/page.tsx" components/layout/app-sidebar.tsx components/usuarios/usuarios-view.tsx "app/(dashboard)/usuarios/page.tsx"
+git add lib/types/index.ts lib/actions/estaciones.ts components/estaciones/estaciones-view.tsx "app/(dashboard)/estaciones/page.tsx" components/layout/app-sidebar.tsx components/usuarios/usuarios-view.tsx "app/(dashboard)/usuarios/page.tsx"
 git commit -m "feat: administración de sucursales y estaciones de impresión"
 ```
 
