@@ -9,7 +9,8 @@ import {
     UsuarioCreateDirectoSchema, UsuarioCreateDirectoFormData,
 } from '@/lib/validations/schemas'
 import { inviteUsuario, updateUsuario, deleteUsuario, updatePermisos, createUsuarioDirecto } from '@/lib/actions/usuarios'
-import { Profile, PermisosAgente, DEFAULT_PERMISOS_AGENTE } from '@/lib/types'
+import { Profile, PermisosAgente } from '@/lib/types'
+import { getPermisos } from '@/lib/utils/permisos'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -25,7 +26,7 @@ import {
     Plus, Trash2, Loader2, ShieldCheck, UserCheck, UserX, Mail,
     Settings2, ChevronDown, ChevronUp, Eye, EyeOff, Webhook, FileText,
     BookUser, FlaskConical, Pencil, Ban, UserPlus, Send, CheckCircle2,
-    Lock, DollarSign, CreditCard,
+    Lock, DollarSign, CreditCard, Ticket, Printer, Gift, Dices,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -53,9 +54,17 @@ const PERMISOS_CONFIG: PermisoConfig[] = [
     { key: 'eliminar_cuentas', label: 'Cancelar Cuentas', desc: 'Cancelar o saldar cuentas', icon: Ban, colorOn: '#fca5a5' },
 ]
 
-function getPermisos(u: Profile): PermisosAgente {
-    return { ...DEFAULT_PERMISOS_AGENTE, ...(u.permisos ?? {}) }
-}
+// Boletería: módulo aparte de la cobranza, se agrupa visualmente distinto
+// para que quede claro que son permisos de otro flujo de negocio.
+const PERMISOS_CONFIG_BOLETERIA: PermisoConfig[] = [
+    { key: 'ver_tickets', label: 'Ver Boletos', desc: 'Ver el listado de boletos emitidos', icon: Ticket, colorOn: '#38bdf8' },
+    { key: 'generar_ticket_manual', label: 'Generar/Anular Boletos', desc: 'Emitir boletos manuales y anular boletos existentes', icon: Ticket, colorOn: '#fb923c' },
+    { key: 'imprimir_ticket', label: 'Imprimir Boletos', desc: 'Enviar boletos a la impresora térmica', icon: Printer, colorOn: '#c084fc' },
+    { key: 'ver_sorteos', label: 'Ver Sorteos', desc: 'Ver los sorteos configurados', icon: Gift, colorOn: '#facc15' },
+    { key: 'realizar_sorteo', label: 'Realizar Sorteo', desc: 'Ejecutar el sorteo y asignar boletos ganadores', icon: Dices, colorOn: '#f472b6' },
+]
+
+const TODOS_PERMISOS_CONFIG = [...PERMISOS_CONFIG, ...PERMISOS_CONFIG_BOLETERIA]
 
 export function UsuariosView({ usuarios }: UsuariosViewProps) {
     const [dialogOpen, setDialogOpen] = useState(false)
@@ -139,7 +148,7 @@ export function UsuariosView({ usuarios }: UsuariosViewProps) {
         startTransition(async () => {
             try {
                 await updatePermisos(usuario.id, nuevosPermisos)
-                const label = PERMISOS_CONFIG.find(p => p.key === key)?.label ?? key
+                const label = TODOS_PERMISOS_CONFIG.find(p => p.key === key)?.label ?? key
                 toast.success(`Permiso "${label}" ${!current ? 'activado' : 'desactivado'}`)
             } catch (e: unknown) { toast.error(e instanceof Error ? e.message : 'Error') }
         })
@@ -219,7 +228,7 @@ export function UsuariosView({ usuarios }: UsuariosViewProps) {
                                         </Badge>
                                         {!isAdmin && (
                                             <span className="text-xs text-slate-500">
-                                                {Object.values(permisos).filter(Boolean).length}/{PERMISOS_CONFIG.length} permisos
+                                                {Object.values(permisos).filter(Boolean).length}/{TODOS_PERMISOS_CONFIG.length} permisos
                                             </span>
                                         )}
                                     </div>
@@ -278,6 +287,39 @@ export function UsuariosView({ usuarios }: UsuariosViewProps) {
                                     </p>
                                     <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
                                         {PERMISOS_CONFIG.map(({ key, label, desc, icon: Icon, colorOn }) => {
+                                            const active = permisos[key]
+                                            return (
+                                                <button
+                                                    key={key}
+                                                    disabled={isPending}
+                                                    onClick={() => handleTogglePermiso(u, key, active)}
+                                                    className="rounded-xl p-3 text-left transition-all duration-150"
+                                                    style={{
+                                                        background: active ? `${colorOn}14` : 'rgba(255,255,255,0.03)',
+                                                        border: active ? `1px solid ${colorOn}30` : '1px solid rgba(255,255,255,0.06)',
+                                                    }}
+                                                >
+                                                    <div className="flex items-center justify-between mb-1.5">
+                                                        <Icon className="w-4 h-4" style={{ color: active ? colorOn : '#475569' }} />
+                                                        <div className={cn('w-7 h-4 rounded-full transition-all duration-200 relative', active ? 'bg-emerald-500' : 'bg-slate-700')}>
+                                                            <span className={cn('absolute top-0.5 w-3 h-3 bg-white rounded-full shadow transition-all duration-200', active ? 'left-3.5' : 'left-0.5')} />
+                                                        </div>
+                                                    </div>
+                                                    <p className="text-xs font-semibold" style={{ color: active ? colorOn : '#64748b' }}>{label}</p>
+                                                    <p className="text-[10px] mt-0.5" style={{ color: active ? `${colorOn}99` : '#475569' }}>{desc}</p>
+                                                </button>
+                                            )
+                                        })}
+                                    </div>
+
+                                    <p className="text-xs text-slate-400 font-semibold mt-4 mb-3 flex items-center gap-1.5">
+                                        <Ticket className="w-3.5 h-3.5 text-orange-400" />
+                                        Boletería
+                                        <span className="text-slate-600 font-normal">— módulo de sorteos y boletos, aparte de la cobranza</span>
+                                    </p>
+                                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 rounded-xl p-2"
+                                        style={{ background: 'rgba(251,146,60,0.04)', border: '1px dashed rgba(251,146,60,0.2)' }}>
+                                        {PERMISOS_CONFIG_BOLETERIA.map(({ key, label, desc, icon: Icon, colorOn }) => {
                                             const active = permisos[key]
                                             return (
                                                 <button

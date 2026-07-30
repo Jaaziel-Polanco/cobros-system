@@ -130,10 +130,11 @@ export interface Ticket {
     veces_enviado: number
     veces_impreso: number
     created_at: string
-    // Joins opcionales
+    // Joins opcionales. Ninguna consulta de lib/actions/tickets.ts trae la
+    // entidad completa: ver TicketConRelaciones / TicketConSorteoResumen más
+    // abajo para las formas parciales reales que sí se devuelven (I10).
     cliente?: Cliente
     sorteo?: Sorteo
-    emisor?: Profile
 }
 
 export interface TicketEvento {
@@ -149,6 +150,61 @@ export interface TicketEvento {
     usuario_id: string | null
     created_at: string
     usuario?: Profile
+}
+
+// ─── TIPOS DE CONSULTA (formas parciales reales) ──────────────
+//
+// Las consultas de lib/actions/tickets.ts embeben relaciones parciales
+// (`.select('*, cliente:clientes(id, nombre, ...)')`), no la entidad
+// completa. Tiparlas como `Ticket` a secas —con `cliente?: Cliente`— miente
+// sobre lo que trae cada fila: el tipo deja compilar `ticket.cliente.email`
+// aunque esa columna nunca viaja en el SELECT, y revienta en runtime con
+// `undefined`. Estos tipos documentan, función por función, lo que
+// devuelve de verdad cada consulta (I10).
+
+/** Cliente tal como lo embebe getTickets(): id, nombre, apellido, teléfono. */
+export interface TicketClienteResumen {
+    id: string
+    nombre: string
+    apellido: string
+    telefono: string | null
+}
+
+/** Sorteo tal como lo embebe getTickets(): solo id y nombre. */
+export interface TicketSorteoResumenListado {
+    id: string
+    nombre: string
+}
+
+/** Sorteo tal como lo embebe getTicketsCliente(): incluye el premio. */
+export interface TicketSorteoResumenPremio {
+    id: string
+    nombre: string
+    premio: string | null
+}
+
+/** Usuario tal como lo embebe getEventosTicket(): id y nombre, nada más. */
+export interface TicketEventoUsuarioResumen {
+    id: string
+    full_name: string
+}
+
+/** Retorno real de getTickets(): el listado general de /tickets. */
+export interface TicketConRelaciones extends Omit<Ticket, 'cliente' | 'sorteo'> {
+    cliente: TicketClienteResumen
+    sorteo: TicketSorteoResumenListado | null
+}
+
+/** Retorno real de getTicketsCliente(): boletos de UN cliente ya conocido,
+ *  por eso no se re-embebe `cliente`; el sorteo sí trae premio. */
+export interface TicketConSorteoResumen extends Omit<Ticket, 'cliente' | 'sorteo'> {
+    sorteo: TicketSorteoResumenPremio | null
+}
+
+/** Retorno real de getEventosTicket(): historial de un boleto con el
+ *  nombre de quien generó cada evento. */
+export interface TicketEventoConUsuario extends Omit<TicketEvento, 'usuario'> {
+    usuario: TicketEventoUsuarioResumen | null
 }
 
 export interface PrintJob {

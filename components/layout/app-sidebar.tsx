@@ -24,7 +24,6 @@ import {
     FlaskConical,
     Store,
     Ticket,
-    Gift,
     Settings,
 } from 'lucide-react'
 import { useState } from 'react'
@@ -38,7 +37,6 @@ const ALL_NAV = [
     { href: '/clientes', label: 'Clientes', icon: Users, permiso: null },
     { href: '/cuentas', label: 'Cuentas', icon: CreditCard, permiso: null },
     { href: '/tickets', label: 'Boletos', icon: Ticket, permiso: 'ver_tickets' },
-    { href: '/sorteos', label: 'Sorteos', icon: Gift, permiso: 'ver_sorteos' },
     { href: '/referencias', label: 'Referencias', icon: BookUser, permiso: 'ver_referencias' },
     { href: '/plantillas', label: 'Plantillas', icon: FileText, permiso: 'ver_plantillas' },
     { href: '/webhooks', label: 'Webhooks', icon: Webhook, permiso: 'ver_webhooks' },

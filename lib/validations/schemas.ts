@@ -67,7 +67,7 @@ export type DeudaFormData = z.infer<typeof DeudaSchema>
 
 export const PlantillaSchema = z.object({
     nombre: z.string().min(1, 'El nombre es requerido').max(100),
-    etapa: z.enum(['preventivo', 'mora_temprana', 'mora_alta', 'recuperacion', 'referencia']),
+    etapa: z.enum(['preventivo', 'mora_temprana', 'mora_alta', 'recuperacion', 'referencia', 'ticket']),
     contenido: z.string().min(10, 'El contenido debe tener al menos 10 caracteres').max(2000),
     activo: z.boolean(),
 })
@@ -81,6 +81,7 @@ export const WebhookSchema = z.object({
     url: z.string().url('URL inválida'),
     descripcion: z.string().max(300).optional().or(z.literal('')),
     activo: z.boolean(),
+    evento: z.enum(['cobranza', 'ticket']),
 })
 
 export type WebhookFormData = z.infer<typeof WebhookSchema>

@@ -29,6 +29,7 @@ const ETAPA_OPTIONS = [
     { value: 'mora_alta', label: 'Mora Alta' },
     { value: 'recuperacion', label: 'Recuperación' },
     { value: 'referencia', label: 'Referencia' },
+    { value: 'ticket', label: 'Boleto de Sorteo' },
 ]
 const ETAPA_CSS: Record<string, string> = {
     preventivo: 'bg-green-500/20 text-green-300',
@@ -36,9 +37,14 @@ const ETAPA_CSS: Record<string, string> = {
     mora_alta: 'bg-orange-500/20 text-orange-300',
     recuperacion: 'bg-red-500/20 text-red-300',
     referencia: 'bg-purple-500/20 text-purple-300',
+    ticket: 'bg-indigo-500/20 text-indigo-300',
 }
 
-const VARIABLES_DISPONIBLES = ['{{nombre}}', '{{apellido}}', '{{monto}}', '{{saldo}}', '{{fecha_corte}}', '{{dias_atraso}}', '{{tasa_interes}}', '{{agente}}']
+// Cobranza: reemplazadas por renderTemplate a partir de cliente/deuda/agente (lib/actions/envios.ts).
+const VARIABLES_COBRANZA = ['{{nombre}}', '{{apellido}}', '{{monto}}', '{{saldo}}', '{{fecha_corte}}', '{{dias_atraso}}', '{{tasa_interes}}', '{{agente}}']
+// Boletos: las que arma construirPayloadTicket() en lib/actions/tickets.ts. Son un set distinto:
+// no hay monto/saldo/deuda porque el boleto no es un recordatorio de cobro.
+const VARIABLES_TICKET = ['{{nombre}}', '{{apellido}}', '{{ticket_numero}}', '{{sorteo}}', '{{premio}}', '{{fecha}}', '{{url_terminos}}']
 
 interface PlantillasViewProps {
     plantillas: PlantillaMensaje[]
@@ -80,6 +86,8 @@ function PlantillaFormModal({
     }, [open, plantilla, reset])
 
     const contenido = watch('contenido') ?? ''
+    const etapaActual = watch('etapa')
+    const variablesDisponibles = etapaActual === 'ticket' ? VARIABLES_TICKET : VARIABLES_COBRANZA
 
     const onSubmit = (data: PlantillaFormData) => {
         startTransition(async () => {
@@ -129,8 +137,13 @@ function PlantillaFormModal({
                     </div>
 
                     {/* Variables disponibles */}
+                    <p className="text-xs text-slate-500">
+                        {etapaActual === 'ticket'
+                            ? 'Variables del boleto de sorteo (distintas a las de cobranza):'
+                            : 'Variables disponibles para esta etapa:'}
+                    </p>
                     <div className="flex flex-wrap gap-1.5">
-                        {VARIABLES_DISPONIBLES.map(v => (
+                        {variablesDisponibles.map(v => (
                             <button type="button" key={v}
                                 onClick={() => setValue('contenido', contenido + ' ' + v)}
                                 className="text-xs bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded hover:bg-indigo-500/30 transition-colors font-mono">

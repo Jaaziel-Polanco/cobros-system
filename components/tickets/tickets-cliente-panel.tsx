@@ -11,7 +11,7 @@ import {
 } from '@/lib/actions/tickets'
 import { formatearFechaHoraRD } from '@/lib/utils/fecha-rd'
 import { ESTADO_TICKET_COLORS, ESTADO_TICKET_LABELS, ORIGEN_TICKET_LABELS } from '@/lib/types'
-import type { Ticket } from '@/lib/types'
+import type { TicketConSorteoResumen } from '@/lib/types'
 
 interface PagoSinBoleto {
     id: string
@@ -24,7 +24,7 @@ interface Props {
     clienteId: string
     clienteNombre: string
     tieneTelefono: boolean
-    tickets: Ticket[]
+    tickets: TicketConSorteoResumen[]
     pagosSinTicket: PagoSinBoleto[]
     /** Gatea "Boleto manual" y "Anular" (permiso `generar_ticket_manual`: crear o
      *  destruir boletos fuera del flujo normal de cobro). */

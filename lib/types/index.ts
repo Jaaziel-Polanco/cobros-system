@@ -46,6 +46,9 @@ export type EtapaPlantilla =
     | 'mora_alta'
     | 'recuperacion'
     | 'referencia'
+    | 'ticket'
+
+export type EventoWebhook = 'cobranza' | 'ticket'
 
 // ─── ENTIDADES PRINCIPALES ────────────────────────────────────
 
@@ -178,6 +181,7 @@ export interface Webhook {
     descripcion?: string
     activo: boolean
     headers: Record<string, string>
+    evento: EventoWebhook
     created_at: string
     updated_at: string
 }

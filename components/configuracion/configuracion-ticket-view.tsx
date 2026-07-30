@@ -16,6 +16,10 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import {
+    AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+    AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { Loader2, AlertTriangle } from 'lucide-react'
 
 interface ConfiguracionTicketViewProps {
@@ -29,6 +33,7 @@ export function ConfiguracionTicketView({ configuracion, urlPublicaBase }: Confi
     const [isPending, startTransition] = useTransition()
     const [probando, startPrueba] = useTransition()
     const [resultado, setResultado] = useState<{ ok: boolean; estado: number; cuerpo: string } | null>(null)
+    const [confirmarPrueba, setConfirmarPrueba] = useState(false)
 
     const {
         register, handleSubmit, setValue, watch, formState: { errors },
@@ -63,6 +68,7 @@ export function ConfiguracionTicketView({ configuracion, urlPublicaBase }: Confi
     }
 
     const probar = () => {
+        setConfirmarPrueba(false)
         startPrueba(async () => {
             try {
                 setResultado(await enviarBoletoDePrueba())
@@ -190,11 +196,30 @@ export function ConfiguracionTicketView({ configuracion, urlPublicaBase }: Confi
                     {isPending ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Guardando...</> : 'Guardar cambios'}
                 </Button>
                 <Button type="button" variant="outline" disabled={probando}
-                    onClick={probar}
+                    onClick={() => setConfirmarPrueba(true)}
                     className="border-white/10 text-slate-300 hover:bg-white/5">
                     {probando ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Enviando...</> : 'Enviar boleto de prueba'}
                 </Button>
             </div>
+
+            <AlertDialog open={confirmarPrueba} onOpenChange={setConfirmarPrueba}>
+                <AlertDialogContent className="bg-slate-900 border-white/10 text-white">
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>¿Enviar boleto de prueba?</AlertDialogTitle>
+                        <AlertDialogDescription className="text-slate-400">
+                            Esto envía un mensaje de WhatsApp REAL a través del webhook de boletos
+                            configurado, con datos ficticios. No es una simulación: si el webhook
+                            apunta a un número real, ese número lo recibirá.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel className="border-white/10 text-slate-300">Cancelar</AlertDialogCancel>
+                        <AlertDialogAction onClick={probar} disabled={probando} className="bg-amber-600 hover:bg-amber-500 text-white">
+                            Sí, enviar
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
 
             {resultado && (
                 <div className="rounded-2xl border border-white/5 bg-slate-800/50 p-5 space-y-2">

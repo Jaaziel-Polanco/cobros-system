@@ -9,11 +9,17 @@ import {
     AnularTicketSchema,
     type TicketManualFormData,
 } from '@/lib/validations/tickets'
-import type { Ticket, TicketEvento, Pago, Rol } from '@/lib/types'
+import type { Ticket, Pago, Rol } from '@/lib/types'
 import { renderTemplate } from '@/lib/utils/template-renderer'
 import { generarTicketPdf } from '@/lib/pdf/ticket-document'
 import { formatearFechaHoraRD, rangoRDaUTC } from '@/lib/utils/fecha-rd'
-import type { TicketWebhookPayload, ConfiguracionTicket } from '@/lib/types'
+import type {
+    TicketWebhookPayload,
+    ConfiguracionTicket,
+    TicketConRelaciones,
+    TicketConSorteoResumen,
+    TicketEventoConUsuario,
+} from '@/lib/types'
 
 /**
  * Cliente admin (service_role), sin sesión de usuario.
@@ -258,7 +264,7 @@ export interface FiltrosTickets {
     hasta?: string   // fecha RD 'YYYY-MM-DD'
 }
 
-export async function getTickets(filtros: FiltrosTickets = {}): Promise<Ticket[]> {
+export async function getTickets(filtros: FiltrosTickets = {}): Promise<TicketConRelaciones[]> {
     const supabase = await createClient()
 
     let query = supabase
@@ -283,10 +289,10 @@ export async function getTickets(filtros: FiltrosTickets = {}): Promise<Ticket[]
 
     const { data, error } = await query
     if (error) throw new Error(error.message)
-    return (data ?? []) as Ticket[]
+    return (data ?? []) as TicketConRelaciones[]
 }
 
-export async function getTicketsCliente(clienteId: string): Promise<Ticket[]> {
+export async function getTicketsCliente(clienteId: string): Promise<TicketConSorteoResumen[]> {
     const supabase = await createClient()
 
     const { data, error } = await supabase
@@ -296,10 +302,10 @@ export async function getTicketsCliente(clienteId: string): Promise<Ticket[]> {
         .order('emitido_at', { ascending: false })
 
     if (error) throw new Error(error.message)
-    return (data ?? []) as Ticket[]
+    return (data ?? []) as TicketConSorteoResumen[]
 }
 
-export async function getEventosTicket(ticketId: string): Promise<TicketEvento[]> {
+export async function getEventosTicket(ticketId: string): Promise<TicketEventoConUsuario[]> {
     const supabase = await createClient()
 
     const { data, error } = await supabase
@@ -309,7 +315,7 @@ export async function getEventosTicket(ticketId: string): Promise<TicketEvento[]
         .order('created_at', { ascending: false })
 
     if (error) throw new Error(error.message)
-    return (data ?? []) as TicketEvento[]
+    return (data ?? []) as TicketEventoConUsuario[]
 }
 
 /**
@@ -567,9 +573,16 @@ export async function enviarTicketWhatsApp(
 export async function enviarBoletoDePrueba(): Promise<{
     ok: boolean; estado: number; cuerpo: string
 }> {
-    const { supabase, permisos } = await perfilActual()
-    if (!permisos.generar_ticket_manual) {
-        throw new Error('No tienes permiso para enviar pruebas')
+    const { supabase, profile } = await perfilActual()
+    // La pantalla entera de /configuracion/tickets ya es solo para admin
+    // (app/(dashboard)/configuracion/tickets/page.tsx redirige a cualquier
+    // agente). Gatear esta acción con `generar_ticket_manual` era
+    // inconsistente: un admin siempre tiene ese permiso via getPermisos(),
+    // pero el gate correcto es "es admin", no "tiene tal permiso de
+    // agente" -- este botón manda un WhatsApp real y solo debe existir
+    // donde ya sabemos que solo hay admins.
+    if (profile.rol !== 'admin') {
+        throw new Error('Solo un administrador puede enviar boletos de prueba')
     }
 
     const { data: cfg } = await supabase
