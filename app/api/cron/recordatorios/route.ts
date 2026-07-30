@@ -143,13 +143,30 @@ export async function GET(req: NextRequest) {
             .select('*')
             .eq('activo', true)
 
-        // 4. Obtener webhook activo
-        const { data: webhook } = await supabase
+        // 4. Obtener webhook activo de cobranza.
+        // El filtro por `evento` es obligatorio desde que la migración 05
+        // separó los webhooks de cobranza y de boletos: sin él, en cuanto
+        // hay un segundo webhook activo (el de boletos) esta consulta deja
+        // de poder decidir cuál fila devolver y Postgres responde
+        // PGRST116 ("Results contain 2 rows") en vez de una sola fila.
+        const { data: webhook, error: webhookError } = await supabase
             .from('webhooks')
             .select('*')
             .eq('activo', true)
+            .eq('evento', 'cobranza')
             .maybeSingle()
 
+        // Un error de consulta (p. ej. PGRST116 por más de un webhook activo
+        // sin este filtro) y "no hay webhook configurado" son fallos
+        // distintos: el primero es un bug/config inconsistente en la base,
+        // el segundo es un estado válido. Confundirlos bajo el mismo
+        // mensaje es justo lo que hizo pasar desapercibido este problema.
+        if (webhookError) {
+            return NextResponse.json(
+                { ok: false, message: `Error al buscar el webhook de cobranza: ${webhookError.message}` },
+                { status: 500 },
+            )
+        }
         if (!webhook) {
             return NextResponse.json({ ok: false, message: 'No hay webhook activo' })
         }

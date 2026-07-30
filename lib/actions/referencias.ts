@@ -94,12 +94,20 @@ export async function enviarNotificacionReferencia(referenciaId: string, deudaId
 
     if (!plantilla) throw new Error('No hay plantilla activa para referencias')
 
-    const { data: webhook } = await supabase
+    // Filtrado por `evento`: sin él, en cuanto hay un segundo webhook activo
+    // (el de boletos) esta consulta deja de poder decidir cuál fila
+    // devolver y Postgres responde PGRST116 ("Results contain 2 rows").
+    const { data: webhook, error: webhookError } = await supabase
         .from('webhooks')
         .select('*')
         .eq('activo', true)
+        .eq('evento', 'cobranza')
         .maybeSingle()
 
+    // Un error de consulta y "no hay webhook configurado" son cosas
+    // distintas -- confundirlas bajo el mismo mensaje es lo que hizo pasar
+    // desapercibido que faltaba este filtro.
+    if (webhookError) throw new Error(`Error al buscar el webhook de cobranza: ${webhookError.message}`)
     if (!webhook) throw new Error('No hay webhook activo configurado')
 
     const variables = {

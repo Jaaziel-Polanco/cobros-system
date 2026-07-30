@@ -278,9 +278,21 @@ export async function getTickets(filtros: FiltrosTickets = {}): Promise<TicketCo
     if (filtros.sorteoId) query = query.eq('sorteo_id', filtros.sorteoId)
     if (filtros.soloHuerfanos) query = query.is('sorteo_id', null)
 
+    // Extremos abiertos: si solo llega "desde" o solo "hasta", el filtro
+    // debe aplicarse igual con ese único límite. Antes, `if (desde && hasta)`
+    // hacía que rellenar un solo campo devolviera la lista COMPLETA sin
+    // ningún aviso -- el usuario creía estar viendo un rango acotado. Se
+    // sigue pasando por rangoRDaUTC (mismo desde y hasta) para no perder la
+    // conversión de hora de pared RD a instante UTC en ningún caso.
     if (filtros.desde && filtros.hasta) {
         const { desdeISO, hastaISO } = rangoRDaUTC(filtros.desde, filtros.hasta)
         query = query.gte('emitido_at', desdeISO).lte('emitido_at', hastaISO)
+    } else if (filtros.desde) {
+        const { desdeISO } = rangoRDaUTC(filtros.desde, filtros.desde)
+        query = query.gte('emitido_at', desdeISO)
+    } else if (filtros.hasta) {
+        const { hastaISO } = rangoRDaUTC(filtros.hasta, filtros.hasta)
+        query = query.lte('emitido_at', hastaISO)
     }
 
     if (filtros.busqueda?.trim()) {
