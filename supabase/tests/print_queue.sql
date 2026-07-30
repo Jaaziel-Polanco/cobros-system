@@ -86,6 +86,31 @@ BEGIN
   ASSERT (SELECT estado FROM public.print_jobs WHERE id = v_job2) = 'impreso',
          'Caso 5: la fila se conserva para auditoría';
 
+  -- Caso 6: un ack duplicado o tardío no debe reimprimir un boleto que ya
+  -- salió. v_job2 ya quedó en 'impreso' en el Caso 5. app/api/print/ack/
+  -- route.ts condiciona su UPDATE a `estado = 'reclamado'`: reproducimos
+  -- exactamente esa guarda aquí. Si dos confirmaciones se cruzan (un
+  -- reintento de red, un agente que se reconecta y reenvía su cola
+  -- pendiente), la segunda ya no encuentra el trabajo en 'reclamado' y no
+  -- debe mutar nada -- ni siquiera si trae {ok:false}.
+  UPDATE public.print_jobs
+     SET estado        = 'pendiente',
+         estacion_id   = NULL,
+         claimed_at    = NULL,
+         error_mensaje = 'ack duplicado simulado'
+   WHERE id = v_job2
+     AND estado = 'reclamado';
+
+  ASSERT (SELECT estado FROM public.print_jobs WHERE id = v_job2) = 'impreso',
+         'Caso 6: un ack duplicado con ok:false no debe sacar el trabajo de impreso';
+
+  -- Y por lo tanto un poll posterior no debe volver a entregarlo: solo
+  -- reclama trabajos en 'pendiente', y v_job2 sigue en 'impreso'.
+  SELECT count(*) INTO v_conteo
+  FROM public.reclamar_print_jobs(v_estacion, v_sucursal, 10)
+  WHERE id = v_job2;
+  ASSERT v_conteo = 0, 'Caso 6: un boleto ya impreso no debe reentregarse por poll';
+
   RAISE NOTICE 'TODAS LAS VERIFICACIONES PASARON';
 END $$;
 

@@ -8,8 +8,23 @@ export const maxDuration = 60
 const ESPERA_MAX_MS = 25_000
 const INTERVALO_MS = 1_500
 
-function dormir(ms: number) {
-    return new Promise(resolve => setTimeout(resolve, ms))
+/** Espera `ms`, pero se corta antes si `signal` se aborta (cliente desconectado). */
+function dormir(ms: number, signal: AbortSignal) {
+    return new Promise<void>(resolve => {
+        if (signal.aborted) {
+            resolve()
+            return
+        }
+        const timer = setTimeout(() => {
+            signal.removeEventListener('abort', onAbort)
+            resolve()
+        }, ms)
+        function onAbort() {
+            clearTimeout(timer)
+            resolve()
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
+    })
 }
 
 /**
@@ -40,6 +55,14 @@ export async function POST(req: Request) {
     )
 
     for (;;) {
+        // El agente se reinició, perdió la red o cerró la conexión: seguir
+        // sondeando hasta los 25 s no sirve a nadie y solo retrasa la
+        // liberación de lo que ya se hubiera reclamado. Cortamos aquí antes
+        // de gastar otra vuelta de RPC.
+        if (req.signal.aborted) {
+            return new Response(null, { status: 204 })
+        }
+
         const { data, error } = await supabase.rpc('reclamar_print_jobs', {
             p_estacion_id: estacion.id,
             p_sucursal_id: estacion.sucursal_id,
@@ -51,6 +74,26 @@ export async function POST(req: Request) {
         }
 
         if (data?.length) {
+            if (req.signal.aborted) {
+                /**
+                 * El agente se desconectó en la ventana entre pedir el RPC y
+                 * recibir la respuesta: los trabajos ya quedaron marcados
+                 * 'reclamado' en la base, pero esta respuesta no va a llegar
+                 * a nadie que la lea. Sin esto quedarían huérfanos hasta que
+                 * reclamar_print_jobs los recupere pasados 90 s (ver la
+                 * migración de la cola). Los liberamos ahora mismo para que
+                 * el próximo poll —de este agente al reconectar, o de otra
+                 * estación— los reciba de inmediato en vez de esperar la
+                 * recuperación por timeout.
+                 */
+                await supabase
+                    .from('print_jobs')
+                    .update({ estado: 'pendiente', estacion_id: null, claimed_at: null })
+                    .in('id', data.map((j: { id: string }) => j.id))
+                    .eq('estado', 'reclamado')
+                return new Response(null, { status: 204 })
+            }
+
             return NextResponse.json({
                 jobs: data.map((j: {
                     id: string; payload_escpos: string | null; es_copia: boolean
@@ -67,6 +110,6 @@ export async function POST(req: Request) {
             return NextResponse.json({ jobs: [] })
         }
 
-        await dormir(INTERVALO_MS)
+        await dormir(INTERVALO_MS, req.signal)
     }
 }

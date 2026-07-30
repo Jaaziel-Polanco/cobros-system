@@ -26,7 +26,7 @@ export async function POST(req: Request) {
 
     const { data: job } = await supabase
         .from('print_jobs')
-        .select('id, ticket_id, intentos, max_intentos, es_copia')
+        .select('id, ticket_id, intentos, max_intentos, es_copia, estado')
         .eq('id', jobId)
         .eq('sucursal_id', estacion.sucursal_id)
         .maybeSingle()
@@ -35,8 +35,27 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: 'Trabajo no encontrado' }, { status: 404 })
     }
 
+    /**
+     * Un trabajo solo puede transicionar desde 'reclamado'. Sin este filtro,
+     * un ack duplicado o tardío (reintento de red del agente, una
+     * reconexión que reenvía la cola pendiente, dos confirmaciones que se
+     * cruzan) encontraba el trabajo ya en 'impreso' y, si llegaba con
+     * `ok:false`, lo devolvía a 'pendiente': el siguiente poll lo
+     * reentregaba y el boleto salía impreso una segunda vez con el mismo
+     * número — el mismo defecto que el reclamo atómico evita, pero entrando
+     * por la puerta del ack. Reconfirmar algo ya resuelto debe ser un no-op
+     * idempotente para el agente, nunca un error ni una reimpresión: se
+     * devuelve el estado actual sin tocar la fila.
+     */
+    if (job.estado !== 'reclamado') {
+        return NextResponse.json({ estado: job.estado })
+    }
+
     if (cuerpo?.ok === true) {
-        await supabase
+        // `.eq('estado', 'reclamado')` de nuevo aquí, no solo arriba: cierra
+        // la ventana entre el SELECT y este UPDATE si dos acks concurrentes
+        // llegan casi a la vez para el mismo trabajo.
+        const { data: actualizado } = await supabase
             .from('print_jobs')
             .update({
                 estado: 'impreso',
@@ -44,6 +63,17 @@ export async function POST(req: Request) {
                 error_mensaje: null,
             })
             .eq('id', jobId)
+            .eq('estado', 'reclamado')
+            .select('id')
+            .maybeSingle()
+
+        if (!actualizado) {
+            // Otro ack concurrente ganó la carrera: devolvemos el estado
+            // real en vez de reintentar la mutación.
+            const { data: actual } = await supabase
+                .from('print_jobs').select('estado').eq('id', jobId).single()
+            return NextResponse.json({ estado: actual?.estado ?? 'impreso' })
+        }
 
         const { data: ticket } = await supabase
             .from('tickets').select('veces_impreso').eq('id', job.ticket_id).single()
@@ -71,7 +101,7 @@ export async function POST(req: Request) {
     const agotado = job.intentos >= job.max_intentos
     const nuevoEstado = agotado ? 'error' : 'pendiente'
 
-    await supabase
+    const { data: actualizado } = await supabase
         .from('print_jobs')
         .update({
             estado: nuevoEstado,
@@ -80,6 +110,15 @@ export async function POST(req: Request) {
             claimed_at: null,
         })
         .eq('id', jobId)
+        .eq('estado', 'reclamado')
+        .select('id')
+        .maybeSingle()
+
+    if (!actualizado) {
+        const { data: actual } = await supabase
+            .from('print_jobs').select('estado').eq('id', jobId).single()
+        return NextResponse.json({ estado: actual?.estado ?? nuevoEstado })
+    }
 
     if (agotado) {
         await supabase.from('ticket_eventos').insert({
