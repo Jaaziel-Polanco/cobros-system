@@ -40,3 +40,7 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 .superpowers/
+
+# supabase temp / skills vendorizadas
+supabase/.temp/
+skills-lock.json
