@@ -6,6 +6,9 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { formatMonto, formatFecha } from '@/lib/utils/template-renderer'
 import { cn } from '@/lib/utils'
+import { getTicketsCliente, getPagosSinTicket } from '@/lib/actions/tickets'
+import { getPermisos } from '@/lib/utils/permisos'
+import { TicketsClientePanel } from '@/components/tickets/tickets-cliente-panel'
 
 const ETAPA_CSS: Record<string, string> = {
     preventivo: 'bg-green-500/20 text-green-300',
@@ -52,6 +55,18 @@ export default async function ClienteDetailPage({ params }: { params: Promise<{ 
         .eq('cliente_id', id)
         .order('sent_at', { ascending: false })
         .limit(20)
+
+    const { data: { user } } = await supabase.auth.getUser()
+    const { data: perfil } = await supabase
+        .from('profiles')
+        .select('id, rol, permisos')
+        .eq('id', user!.id)
+        .single()
+
+    const permisos = getPermisos(perfil!)
+
+    const tickets = permisos.ver_tickets ? await getTicketsCliente(id) : []
+    const pagosSinTicket = permisos.ver_tickets ? await getPagosSinTicket(id) : []
 
     const deudaActiva = cliente.deudas?.find((d: { estado: string }) => d.estado === 'activo')
 
@@ -187,6 +202,17 @@ export default async function ClienteDetailPage({ params }: { params: Promise<{ 
                             </div>
                         )}
                     </div>
+
+                    {permisos.ver_tickets && (
+                        <TicketsClientePanel
+                            clienteId={cliente.id}
+                            clienteNombre={`${cliente.nombre} ${cliente.apellido}`}
+                            tieneTelefono={(cliente.telefono ?? '').replace(/\D/g, '').length >= 10}
+                            tickets={tickets}
+                            pagosSinTicket={pagosSinTicket}
+                            puedeGenerar={permisos.generar_ticket_manual}
+                        />
+                    )}
 
                     {/* Historial de envíos */}
                     <div className="bg-slate-800/50 border border-white/5 rounded-2xl p-5">
