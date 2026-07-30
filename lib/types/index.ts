@@ -303,3 +303,6 @@ export const FRECUENCIA_DIAS: Record<FrecuenciaPago, number> = {
     quincenal: 15,
     semanal: 7,
 }
+
+// ─── MÓDULO DE BOLETERÍA ─────────────────────────────────────
+export * from './tickets'
