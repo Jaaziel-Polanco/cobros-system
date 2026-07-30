@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { AppSidebar } from '@/components/layout/app-sidebar'
 import { PagosPendientesPanel } from '@/components/layout/pagos-pendientes-panel'
 import { Profile, Deuda } from '@/lib/types'
+import { getPermisos } from '@/lib/utils/permisos'
 import { Menu, TrendingUp } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
@@ -28,6 +29,9 @@ interface DashboardShellProps {
 
 export function DashboardShell({ profile, children, deudasPendientes = [] }: DashboardShellProps) {
     const [mobileOpen, setMobileOpen] = useState(false)
+    // I8: el panel flotante no debe ofrecer el modal de boleto a quien no
+    // tiene ver_tickets -- solo puede fallar.
+    const puedeVerTickets = getPermisos(profile).ver_tickets
 
     return (
         <div className="flex h-screen overflow-hidden" style={{ background: '#0a1628' }}>
@@ -63,7 +67,10 @@ export function DashboardShell({ profile, children, deudasPendientes = [] }: Das
 
                     {/* Floating notification panel */}
                     {deudasPendientes.length > 0 && (
-                        <PagosPendientesPanel deudasPendientes={deudasPendientes} />
+                        <PagosPendientesPanel
+                            deudasPendientes={deudasPendientes}
+                            puedeVerTickets={puedeVerTickets}
+                        />
                     )}
                 </div>
             </main>

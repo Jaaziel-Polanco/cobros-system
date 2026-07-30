@@ -1,6 +1,7 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
+import { createClient as createAdminClient } from '@supabase/supabase-js'
 import { revalidatePath } from 'next/cache'
 import { getPermisos } from '@/lib/utils/permisos'
 import {
@@ -13,6 +14,51 @@ import { renderTemplate } from '@/lib/utils/template-renderer'
 import { generarTicketPdf } from '@/lib/pdf/ticket-document'
 import { formatearFechaHoraRD, rangoRDaUTC } from '@/lib/utils/fecha-rd'
 import type { TicketWebhookPayload, ConfiguracionTicket } from '@/lib/types'
+
+/**
+ * Cliente admin (service_role), sin sesión de usuario.
+ *
+ * Se usa exclusivamente para leer `webhooks` (C1: la única policy de esa
+ * tabla es "admin acceso total"; los agentes no deben poder leerla en
+ * absoluto porque `headers` puede llevar credenciales del proveedor de
+ * WhatsApp) y para dejar rastro en `ticket_eventos` de fallos que ocurren
+ * antes de saber si el usuario tiene permiso de escribir esa fila (I7).
+ * No reemplaza las comprobaciones de permiso en TypeScript: siguen todas
+ * en el cliente de sesión, más arriba en cada función.
+ */
+function crearClienteAdmin() {
+    return createAdminClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.SUPABASE_SERVICE_ROLE_KEY!,
+        { auth: { autoRefreshToken: false, persistSession: false } },
+    )
+}
+
+/**
+ * Registra en ticket_eventos un fallo de precondición del envío por
+ * WhatsApp (boleto anulado, teléfono inválido, falta configuración,
+ * falta plantilla, falta webhook) ANTES de lanzar el error. Sin esto,
+ * los fallos que ocurrían antes del insert de evento no dejaban ningún
+ * rastro (I7) — justo el tipo de fallo que había hecho invisible el
+ * problema C1. Usa el cliente admin para no depender de las policies del
+ * usuario que está fallando.
+ */
+async function registrarFalloPrecondicionEnvio(
+    ticketId: string,
+    detalle: string,
+    usuarioId: string,
+    reenvio: boolean,
+): Promise<void> {
+    const admin = crearClienteAdmin()
+    await admin.from('ticket_eventos').insert({
+        ticket_id: ticketId,
+        tipo: 'enviado_wa',
+        estado: 'error',
+        es_copia: reenvio,
+        detalle,
+        usuario_id: usuarioId,
+    })
+}
 
 /** Lee el perfil del usuario de la sesión. Lanza si no hay sesión. */
 async function perfilActual() {
@@ -405,16 +451,27 @@ export async function enviarTicketWhatsApp(
         .single()
 
     if (ticketError || !ticket) throw new Error('Boleto no encontrado')
-    if (ticket.estado === 'anulado') throw new Error('El boleto está anulado')
 
     const t = ticket as Ticket
+
+    if (t.estado === 'anulado') {
+        await registrarFalloPrecondicionEnvio(t.id, 'El boleto está anulado', user.id, reenvio)
+        throw new Error('El boleto está anulado')
+    }
+
     if (!(await telefonoEsValido(t.snapshot.cliente.telefono))) {
+        await registrarFalloPrecondicionEnvio(
+            t.id, 'El cliente no tiene un teléfono válido registrado', user.id, reenvio,
+        )
         throw new Error('El cliente no tiene un teléfono válido registrado')
     }
 
     const { data: cfg } = await supabase
         .from('configuracion_ticket').select('*').eq('id', true).single()
-    if (!cfg) throw new Error('Falta configurar el módulo de boletos')
+    if (!cfg) {
+        await registrarFalloPrecondicionEnvio(t.id, 'Falta configurar el módulo de boletos', user.id, reenvio)
+        throw new Error('Falta configurar el módulo de boletos')
+    }
 
     const { data: plantilla } = await supabase
         .from('plantillas_mensaje')
@@ -422,15 +479,30 @@ export async function enviarTicketWhatsApp(
         .eq('etapa', 'ticket')
         .eq('activo', true)
         .maybeSingle()
-    if (!plantilla) throw new Error('No hay plantilla activa para boletos')
+    if (!plantilla) {
+        await registrarFalloPrecondicionEnvio(t.id, 'No hay plantilla activa para boletos', user.id, reenvio)
+        throw new Error('No hay plantilla activa para boletos')
+    }
 
-    const { data: webhook } = await supabase
+    // C1: se lee con el cliente admin porque la única policy de `webhooks`
+    // es "admin acceso total" -- un agente ve 0 filas con el cliente de
+    // sesión y esto fallaba el 100% de las veces para los 7 agentes. No se
+    // añade una policy de lectura para agentes: `headers` puede llevar
+    // credenciales del proveedor de WhatsApp, y no hay razón de negocio
+    // para que un agente pueda leerlas. La comprobación de si el agente
+    // puede enviar este boleto ya ocurrió arriba en TypeScript (permisos,
+    // propiedad del cliente); esto es solo la lectura de configuración.
+    const admin = crearClienteAdmin()
+    const { data: webhook } = await admin
         .from('webhooks')
         .select('*')
         .eq('activo', true)
         .eq('evento', 'ticket')
         .maybeSingle()
     if (!webhook) {
+        await registrarFalloPrecondicionEnvio(
+            t.id, 'No hay webhook activo configurado para boletos', user.id, reenvio,
+        )
         throw new Error('No hay webhook activo configurado para boletos')
     }
 
@@ -460,10 +532,22 @@ export async function enviarTicketWhatsApp(
     })
 
     if (resultado.ok) {
-        await supabase
-            .from('tickets')
-            .update({ veces_enviado: t.veces_enviado + 1 })
-            .eq('id', t.id)
+        // I7: RPC atómico en vez de leer-y-escribir con el cliente de sesión.
+        // La única policy de UPDATE sobre tickets para agentes exige
+        // generar_ticket_manual, mientras que este flujo se gatea con
+        // ver_tickets: para un agente con ver_tickets y sin
+        // generar_ticket_manual, el UPDATE anterior afectaba 0 filas sin que
+        // nadie se enterara (no había .select()). El RPC es SECURITY DEFINER
+        // y hace el incremento en una sola sentencia atómica.
+        const { error: incrementoError } = await supabase.rpc('incrementar_envio_ticket', {
+            p_ticket_id: t.id,
+        })
+        if (incrementoError) {
+            console.error(
+                `[TICKETS] No se pudo incrementar veces_enviado del boleto ${t.id}:`,
+                incrementoError.message,
+            )
+        }
     }
 
     revalidatePath(`/clientes/${t.cliente_id}`)
@@ -497,7 +581,10 @@ export async function enviarBoletoDePrueba(): Promise<{
         .select('*').eq('etapa', 'ticket').eq('activo', true).maybeSingle()
     if (!plantilla) throw new Error('No hay plantilla activa para boletos')
 
-    const { data: webhook } = await supabase
+    // C1: mismo motivo que en enviarTicketWhatsApp -- webhooks solo lo puede
+    // leer el cliente admin.
+    const admin = crearClienteAdmin()
+    const { data: webhook } = await admin
         .from('webhooks')
         .select('*').eq('activo', true).eq('evento', 'ticket').maybeSingle()
     if (!webhook) throw new Error('No hay webhook activo configurado para boletos')

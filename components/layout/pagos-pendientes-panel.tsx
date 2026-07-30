@@ -28,6 +28,13 @@ type DeudaPendiente = Deuda & {
 
 interface PagosPendientesPanelProps {
     deudasPendientes: DeudaPendiente[]
+    /**
+     * I8: sin este permiso no se abre el modal de boleto tras marcar un
+     * pago desde el panel flotante -- solo puede fallar (emitirTicketDePago
+     * lo rechaza en TypeScript). El pago se marca exactamente igual; lo
+     * único que cambia es que el modal no aparece.
+     */
+    puedeVerTickets?: boolean
 }
 
 function getPeriodoActual(deuda: DeudaPendiente): string {
@@ -64,7 +71,7 @@ const URGENCIA_CONFIG = {
     proximo: { color: '#5bbfed', bgColor: 'rgba(0,126,198,0.1)', borderColor: 'rgba(0,126,198,0.2)', label: 'Próximo', icon: Calendar },
 }
 
-export function PagosPendientesPanel({ deudasPendientes }: PagosPendientesPanelProps) {
+export function PagosPendientesPanel({ deudasPendientes, puedeVerTickets = false }: PagosPendientesPanelProps) {
     const [expanded, setExpanded] = useState(false)
     const [isPending, startTransition] = useTransition()
     const [dismissed, setDismissed] = useState<Set<string>>(new Set())
@@ -92,16 +99,18 @@ export function PagosPendientesPanel({ deudasPendientes }: PagosPendientesPanelP
                 const { pagoId } = await marcarPagoPeriodo(deuda.id, periodo)
                 toast.success(`Pago registrado para ${deuda.cliente?.nombre ?? 'cliente'}`)
                 setDismissed(prev => new Set([...prev, deuda.id]))
-                setTicketDialog({
-                    pagoId,
-                    nombre: `${deuda.cliente?.nombre ?? ''} ${deuda.cliente?.apellido ?? ''}`.trim(),
-                    telefono: deuda.cliente?.telefono ?? null,
-                })
+                if (puedeVerTickets) {
+                    setTicketDialog({
+                        pagoId,
+                        nombre: `${deuda.cliente?.nombre ?? ''} ${deuda.cliente?.apellido ?? ''}`.trim(),
+                        telefono: deuda.cliente?.telefono ?? null,
+                    })
+                }
             } catch (e: unknown) {
                 toast.error(e instanceof Error ? e.message : 'Error al registrar pago')
             }
         })
-    }, [])
+    }, [puedeVerTickets])
 
     if (total === 0 && !ticketDialog) return null
 
@@ -218,13 +227,15 @@ export function PagosPendientesPanel({ deudasPendientes }: PagosPendientesPanelP
                 {criticos.length > 0 && <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />}
             </button>
 
-            <TicketConfirmDialog
-                abierto={!!ticketDialog}
-                onCerrar={() => setTicketDialog(null)}
-                pagoId={ticketDialog?.pagoId ?? null}
-                clienteNombre={ticketDialog?.nombre ?? ''}
-                clienteTelefono={ticketDialog?.telefono ?? null}
-            />
+            {puedeVerTickets && (
+                <TicketConfirmDialog
+                    abierto={!!ticketDialog}
+                    onCerrar={() => setTicketDialog(null)}
+                    pagoId={ticketDialog?.pagoId ?? null}
+                    clienteNombre={ticketDialog?.nombre ?? ''}
+                    clienteTelefono={ticketDialog?.telefono ?? null}
+                />
+            )}
         </div>
     )
 }

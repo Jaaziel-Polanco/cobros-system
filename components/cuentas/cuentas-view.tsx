@@ -50,9 +50,16 @@ interface CuentasViewProps {
     deudas: (Deuda & { cliente?: ClienteSimple; agente?: { full_name: string } })[]
     clientes: ClienteSimple[]
     agentes: Profile[]
+    /**
+     * I8: sin este permiso no se abre el modal de boleto tras registrar un
+     * pago -- solo puede fallar (emitirTicketDePago lo rechaza en
+     * TypeScript). El pago se registra exactamente igual; lo único que
+     * cambia es que el modal no aparece.
+     */
+    puedeVerTickets?: boolean
 }
 
-export function CuentasView({ deudas, clientes, agentes }: CuentasViewProps) {
+export function CuentasView({ deudas, clientes, agentes, puedeVerTickets = false }: CuentasViewProps) {
     const [search, setSearch] = useState('')
     const [etapaFilter, setEtapaFilter] = useState('')
     const [estadoFilter, setEstadoFilter] = useState('')
@@ -120,11 +127,13 @@ export function CuentasView({ deudas, clientes, agentes }: CuentasViewProps) {
                         pagoDialog.id, periodo, 'Pago registrado desde cuentas',
                     )
                     toast.success('Pago registrado correctamente')
-                    setTicketDialog({
-                        pagoId,
-                        nombre: `${pagoDialog.cliente?.nombre ?? ''} ${pagoDialog.cliente?.apellido ?? ''}`.trim(),
-                        telefono: pagoDialog.cliente?.telefono ?? null,
-                    })
+                    if (puedeVerTickets) {
+                        setTicketDialog({
+                            pagoId,
+                            nombre: `${pagoDialog.cliente?.nombre ?? ''} ${pagoDialog.cliente?.apellido ?? ''}`.trim(),
+                            telefono: pagoDialog.cliente?.telefono ?? null,
+                        })
+                    }
                     setPagoDialog(null)
                     setMontoPago('')
                 } catch (e: unknown) {
@@ -139,11 +148,13 @@ export function CuentasView({ deudas, clientes, agentes }: CuentasViewProps) {
             try {
                 const { pagoId } = await registrarPago(pagoDialog.id, monto)
                 toast.success('Pago registrado correctamente')
-                setTicketDialog({
-                    pagoId,
-                    nombre: `${pagoDialog.cliente?.nombre ?? ''} ${pagoDialog.cliente?.apellido ?? ''}`.trim(),
-                    telefono: pagoDialog.cliente?.telefono ?? null,
-                })
+                if (puedeVerTickets) {
+                    setTicketDialog({
+                        pagoId,
+                        nombre: `${pagoDialog.cliente?.nombre ?? ''} ${pagoDialog.cliente?.apellido ?? ''}`.trim(),
+                        telefono: pagoDialog.cliente?.telefono ?? null,
+                    })
+                }
                 setPagoDialog(null)
                 setMontoPago('')
             } catch (e: unknown) {
@@ -375,13 +386,15 @@ export function CuentasView({ deudas, clientes, agentes }: CuentasViewProps) {
                 </DialogContent>
             </Dialog>
 
-            <TicketConfirmDialog
-                abierto={!!ticketDialog}
-                onCerrar={() => setTicketDialog(null)}
-                pagoId={ticketDialog?.pagoId ?? null}
-                clienteNombre={ticketDialog?.nombre ?? ''}
-                clienteTelefono={ticketDialog?.telefono ?? null}
-            />
+            {puedeVerTickets && (
+                <TicketConfirmDialog
+                    abierto={!!ticketDialog}
+                    onCerrar={() => setTicketDialog(null)}
+                    pagoId={ticketDialog?.pagoId ?? null}
+                    clienteNombre={ticketDialog?.nombre ?? ''}
+                    clienteTelefono={ticketDialog?.telefono ?? null}
+                />
+            )}
         </>
     )
 }
