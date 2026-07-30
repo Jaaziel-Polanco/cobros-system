@@ -57,9 +57,13 @@ interface CuentasViewProps {
      * cambia es que el modal no aparece.
      */
     puedeVerTickets?: boolean
+    /** Estado de la estación de impresión del usuario actual (Tarea 5). */
+    estacion?: { sucursalNombre: string; enLinea: boolean } | null
 }
 
-export function CuentasView({ deudas, clientes, agentes, puedeVerTickets = false }: CuentasViewProps) {
+export function CuentasView({
+    deudas, clientes, agentes, puedeVerTickets = false, estacion = null,
+}: CuentasViewProps) {
     const [search, setSearch] = useState('')
     const [etapaFilter, setEtapaFilter] = useState('')
     const [estadoFilter, setEstadoFilter] = useState('')
@@ -393,6 +397,7 @@ export function CuentasView({ deudas, clientes, agentes, puedeVerTickets = false
                     pagoId={ticketDialog?.pagoId ?? null}
                     clienteNombre={ticketDialog?.nombre ?? ''}
                     clienteTelefono={ticketDialog?.telefono ?? null}
+                    estacion={estacion}
                 />
             )}
         </>

@@ -6,6 +6,7 @@ import {
     crearSucursal, actualizarSucursal,
     crearEstacion, actualizarEstacion, regenerarTokenEstacion,
 } from '@/lib/actions/estaciones'
+import { imprimirPaginaDePrueba } from '@/lib/actions/impresion'
 import type { Sucursal, EstacionImpresion } from '@/lib/types'
 import { formatearFechaHoraRD } from '@/lib/utils/fecha-rd'
 import { Button } from '@/components/ui/button'
@@ -276,6 +277,15 @@ export function EstacionesView({ sucursales, estaciones }: EstacionesViewProps) 
         })
     }
 
+    const handleImprimirPrueba = (id: string) => {
+        startTransition(async () => {
+            try {
+                await imprimirPaginaDePrueba(id)
+                toast.success('Página de prueba encolada')
+            } catch (e: unknown) { toast.error(e instanceof Error ? e.message : 'Error') }
+        })
+    }
+
     return (
         <div className="space-y-8">
             {/* ── Sucursales ────────────────────────────────── */}
@@ -399,9 +409,9 @@ export function EstacionesView({ sucursales, estaciones }: EstacionesViewProps) 
                                             onClick={() => handleRegenerar(est.id, est.nombre)}>
                                             <RotateCw className="w-3.5 h-3.5" />Regenerar token
                                         </Button>
-                                        <Button size="sm" variant="outline" disabled
-                                            title="Se habilita en una tarea posterior, cuando exista el agente de impresión"
-                                            className="border-white/10 text-slate-500 gap-1.5">
+                                        <Button size="sm" variant="outline" disabled={isPending}
+                                            className="border-white/10 text-slate-300 hover:bg-white/5 gap-1.5"
+                                            onClick={() => handleImprimirPrueba(est.id)}>
                                             <PrinterCheck className="w-3.5 h-3.5" />Imprimir página de prueba
                                         </Button>
                                     </div>

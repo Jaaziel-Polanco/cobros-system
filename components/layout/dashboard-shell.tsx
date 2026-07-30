@@ -25,9 +25,13 @@ interface DashboardShellProps {
     profile: Profile
     children: React.ReactNode
     deudasPendientes?: DeudaPendiente[]
+    /** Estado de la estación de impresión del usuario actual (Tarea 5). */
+    estacion?: { sucursalNombre: string; enLinea: boolean } | null
 }
 
-export function DashboardShell({ profile, children, deudasPendientes = [] }: DashboardShellProps) {
+export function DashboardShell({
+    profile, children, deudasPendientes = [], estacion = null,
+}: DashboardShellProps) {
     const [mobileOpen, setMobileOpen] = useState(false)
     // I8: el panel flotante no debe ofrecer el modal de boleto a quien no
     // tiene ver_tickets -- solo puede fallar.
@@ -70,6 +74,7 @@ export function DashboardShell({ profile, children, deudasPendientes = [] }: Das
                         <PagosPendientesPanel
                             deudasPendientes={deudasPendientes}
                             puedeVerTickets={puedeVerTickets}
+                            estacion={estacion}
                         />
                     )}
                 </div>

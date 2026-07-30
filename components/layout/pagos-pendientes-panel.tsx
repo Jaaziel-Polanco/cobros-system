@@ -35,6 +35,8 @@ interface PagosPendientesPanelProps {
      * único que cambia es que el modal no aparece.
      */
     puedeVerTickets?: boolean
+    /** Estado de la estación de impresión del usuario actual (Tarea 5). */
+    estacion?: { sucursalNombre: string; enLinea: boolean } | null
 }
 
 function getPeriodoActual(deuda: DeudaPendiente): string {
@@ -71,7 +73,9 @@ const URGENCIA_CONFIG = {
     proximo: { color: '#5bbfed', bgColor: 'rgba(0,126,198,0.1)', borderColor: 'rgba(0,126,198,0.2)', label: 'Próximo', icon: Calendar },
 }
 
-export function PagosPendientesPanel({ deudasPendientes, puedeVerTickets = false }: PagosPendientesPanelProps) {
+export function PagosPendientesPanel({
+    deudasPendientes, puedeVerTickets = false, estacion = null,
+}: PagosPendientesPanelProps) {
     const [expanded, setExpanded] = useState(false)
     const [isPending, startTransition] = useTransition()
     const [dismissed, setDismissed] = useState<Set<string>>(new Set())
@@ -234,6 +238,7 @@ export function PagosPendientesPanel({ deudasPendientes, puedeVerTickets = false
                     pagoId={ticketDialog?.pagoId ?? null}
                     clienteNombre={ticketDialog?.nombre ?? ''}
                     clienteTelefono={ticketDialog?.telefono ?? null}
+                    estacion={estacion}
                 />
             )}
         </div>

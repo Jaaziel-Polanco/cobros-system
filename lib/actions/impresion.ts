@@ -4,6 +4,9 @@ import { createClient } from '@/lib/supabase/server'
 import { revalidatePath } from 'next/cache'
 import { getPermisos } from '@/lib/utils/permisos'
 import { construirTirillaTicket } from '@/lib/escpos/tirilla-ticket'
+import { aBytes, selectorCodepage } from '@/lib/escpos/codificacion'
+import { CMD, TAMANO } from '@/lib/escpos/comandos'
+import { centrar, linea } from '@/lib/escpos/formato'
 import type { Ticket } from '@/lib/types'
 
 /** Estación asociada al usuario actual, con su estado de conexión. */
@@ -120,5 +123,91 @@ export async function imprimirTicket(
     revalidatePath(`/clientes/${ticket.cliente_id}`)
     revalidatePath('/tickets')
 
+    return { jobId: job.id }
+}
+
+/**
+ * Encola una página de prueba en una estación concreta.
+ * Incluye a propósito una línea con acentos y eñes: es la forma rápida de
+ * comprobar que el codepage de esa impresora está bien configurado.
+ */
+export async function imprimirPaginaDePrueba(
+    estacionId: string,
+): Promise<{ jobId: string }> {
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) throw new Error('No autenticado')
+
+    const { data: perfil } = await supabase
+        .from('profiles').select('rol').eq('id', user.id).single()
+    if (perfil?.rol !== 'admin') {
+        throw new Error('Solo un administrador puede imprimir páginas de prueba')
+    }
+
+    const { data: estacion } = await supabase
+        .from('estaciones_impresion')
+        .select('id, sucursal_id, nombre, ancho_cols, codepage')
+        .eq('id', estacionId)
+        .single()
+
+    if (!estacion) throw new Error('Estación no encontrada')
+
+    const cols = estacion.ancho_cols
+    const cp = estacion.codepage
+    const lineas = [
+        linea(cols),
+        centrar('PAGINA DE PRUEBA', cols),
+        linea(cols),
+        `Estacion: ${estacion.nombre}`,
+        `Ancho:    ${cols} columnas`,
+        `Codepage: ${cp}`,
+        '',
+        'Prueba de acentos:',
+        'Muñoz Peña García Jiménez Núñez',
+        'áéíóú ÁÉÍÓÚ ñÑ üÜ ¿? ¡!',
+        '',
+        'Si las letras de arriba se ven mal,',
+        'cambia el codepage de esta estacion.',
+        linea(cols),
+        '', '', '',
+    ]
+
+    const partes: Buffer[] = [
+        CMD.INIT,
+        CMD.codepage(selectorCodepage(cp)),
+        CMD.interlineado(30),
+        CMD.tamano(TAMANO.NORMAL),
+    ]
+    for (const l of lineas) partes.push(aBytes(l, cp), CMD.SALTO)
+    partes.push(CMD.CORTAR)
+
+    const bytes = Buffer.concat(partes)
+
+    // La página de prueba no pertenece a ningún boleto real; se ata al más
+    // reciente solo para satisfacer la clave foránea.
+    const { data: cualquierTicket } = await supabase
+        .from('tickets').select('id').order('created_at', { ascending: false })
+        .limit(1).maybeSingle()
+
+    if (!cualquierTicket) {
+        throw new Error('Emite al menos un boleto antes de imprimir una prueba')
+    }
+
+    const { data: job, error } = await supabase
+        .from('print_jobs')
+        .insert({
+            ticket_id: cualquierTicket.id,
+            sucursal_id: estacion.sucursal_id,
+            es_copia: true,
+            payload_escpos: bytes.toString('base64'),
+            preview_texto: lineas.join('\n'),
+            solicitado_por: user.id,
+        })
+        .select('id')
+        .single()
+
+    if (error) throw new Error(error.message)
+
+    revalidatePath('/estaciones')
     return { jobId: job.id }
 }

@@ -8,6 +8,7 @@ import {
     Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog'
 import { emitirTicketDePago, enviarTicketWhatsApp } from '@/lib/actions/tickets'
+import { imprimirTicket } from '@/lib/actions/impresion'
 import type { Ticket } from '@/lib/types'
 
 interface Props {
@@ -16,7 +17,7 @@ interface Props {
     pagoId: string | null
     clienteNombre: string
     clienteTelefono: string | null
-    puedeImprimir?: boolean
+    estacion?: { sucursalNombre: string; enLinea: boolean } | null
 }
 
 function telefonoValido(t: string | null): boolean {
@@ -24,7 +25,7 @@ function telefonoValido(t: string | null): boolean {
 }
 
 export function TicketConfirmDialog({
-    abierto, onCerrar, pagoId, clienteNombre, clienteTelefono, puedeImprimir = false,
+    abierto, onCerrar, pagoId, clienteNombre, clienteTelefono, estacion = null,
 }: Props) {
     const [pendiente, startTransition] = useTransition()
     const [emitido, setEmitido] = useState<Ticket | null>(null)
@@ -38,13 +39,16 @@ export function TicketConfirmDialog({
         onCerrar()
     }
 
-    // Emisión y envío son dos fallos distintos: el boleto puede haberse
-    // generado con éxito aunque el webhook de WhatsApp falle (n8n caído,
-    // sin plantilla activa, etc.). Reportar ambos bajo el mismo mensaje
-    // ("Error al generar el boleto") es falso cuando lo único que falló fue
-    // el envío, y además el pago ya está comprometido antes de abrir este
-    // modal: el agente necesita el número del boleto de todos modos.
-    const emitir = (enviar: boolean) => {
+    type Via = 'whatsapp' | 'imprimir' | 'ninguna'
+
+    // Emisión, envío e impresión son tres fallos distintos: el boleto puede
+    // haberse generado con éxito aunque el webhook de WhatsApp falle (n8n
+    // caído, sin plantilla activa, etc.) o aunque la impresora esté fuera
+    // de línea. Reportar todo bajo el mismo mensaje ("Error al generar el
+    // boleto") es falso cuando lo único que falló fue la entrega, y además
+    // el pago ya está comprometido antes de abrir este modal: el agente
+    // necesita el número del boleto de todos modos.
+    const emitir = (via: Via) => {
         if (!pagoId) return
         startTransition(async () => {
             let ticket: Ticket
@@ -64,7 +68,7 @@ export function TicketConfirmDialog({
                 return
             }
 
-            if (enviar) {
+            if (via === 'whatsapp') {
                 try {
                     await enviarTicketWhatsApp(ticket.id)
                     setEnvioError(null)
@@ -75,6 +79,17 @@ export function TicketConfirmDialog({
                     setEnvioError(motivo)
                     toast.error(
                         `Boleto ${ticket.numero_formateado} generado, pero no se pudo enviar por WhatsApp: ${motivo}`,
+                    )
+                }
+            } else if (via === 'imprimir') {
+                try {
+                    await imprimirTicket(ticket.id)
+                    toast.success('Boleto enviado a la impresora')
+                    cerrar()
+                } catch (e: unknown) {
+                    const motivo = e instanceof Error ? e.message : 'Error desconocido'
+                    toast.error(
+                        `Boleto ${ticket.numero_formateado} generado, pero no se pudo enviar a imprimir: ${motivo}`,
                     )
                 }
             }
@@ -142,7 +157,7 @@ export function TicketConfirmDialog({
                     <Button
                         className="w-full justify-start gap-2"
                         disabled={pendiente || !hayTelefono || !!emitido}
-                        onClick={() => emitir(true)}
+                        onClick={() => emitir('whatsapp')}
                         style={{ background: 'linear-gradient(135deg,#25D366,#128C7E)' }}
                     >
                         <MessageCircle className="h-4 w-4" />
@@ -164,19 +179,28 @@ export function TicketConfirmDialog({
                     <Button
                         variant="outline"
                         className="w-full justify-start gap-2"
-                        disabled
-                        title={puedeImprimir ? undefined : 'Disponible al instalar la impresora'}
+                        disabled={pendiente || !estacion || !!emitido}
+                        onClick={() => emitir('imprimir')}
                     >
                         <Printer className="h-4 w-4" />
                         Generar e imprimir
-                        <span className="ml-auto text-[10px] text-slate-500">Próximamente</span>
+                        {estacion ? (
+                            <span className="ml-auto flex items-center gap-1.5 text-[10px]">
+                                <span className={`h-1.5 w-1.5 rounded-full ${estacion.enLinea ? 'bg-green-400' : 'bg-slate-600'}`} />
+                                {estacion.sucursalNombre}
+                            </span>
+                        ) : (
+                            <span className="ml-auto text-[10px] text-slate-500">
+                                Sin sucursal
+                            </span>
+                        )}
                     </Button>
 
                     <Button
                         variant="outline"
                         className="w-full justify-start gap-2"
                         disabled={pendiente || !!emitido}
-                        onClick={() => emitir(false)}
+                        onClick={() => emitir('ninguna')}
                     >
                         <TicketIcon className="h-4 w-4" />
                         Solo generar
@@ -204,6 +228,13 @@ export function TicketConfirmDialog({
                         {emitido ? 'Cerrar' : 'No generar'}
                     </Button>
                 </div>
+
+                {estacion && !estacion.enLinea && (
+                    <p className="rounded-lg bg-amber-500/15 px-3 py-2 text-xs text-amber-300">
+                        La impresora de {estacion.sucursalNombre} no está conectada ahora
+                        mismo. El boleto quedará en cola y se imprimirá cuando vuelva.
+                    </p>
+                )}
 
                 {!emitido && (
                     <p className="text-[11px] text-slate-500">
