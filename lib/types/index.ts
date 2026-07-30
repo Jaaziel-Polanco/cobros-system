@@ -16,6 +16,11 @@ export interface PermisosAgente {
     eliminar_cuentas: boolean
     registrar_pagos: boolean
     crear_cuentas: boolean
+    ver_tickets: boolean
+    generar_ticket_manual: boolean
+    imprimir_ticket: boolean
+    ver_sorteos: boolean
+    realizar_sorteo: boolean
 }
 
 export type EtapaCobranza =
@@ -65,6 +70,11 @@ export const DEFAULT_PERMISOS_AGENTE: PermisosAgente = {
     eliminar_cuentas: false,
     registrar_pagos: true,
     crear_cuentas: true,
+    ver_tickets: true,
+    generar_ticket_manual: true,
+    imprimir_ticket: true,
+    ver_sorteos: false,
+    realizar_sorteo: false,
 }
 
 export interface Cliente {
