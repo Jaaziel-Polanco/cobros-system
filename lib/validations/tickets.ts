@@ -21,7 +21,9 @@ export const AnularTicketSchema = z.object({
 export type AnularTicketFormData = z.infer<typeof AnularTicketSchema>
 
 export const ConfiguracionTicketSchema = z.object({
-    nombre_comercial: z.string().trim().min(1, 'El nombre comercial es obligatorio'),
+    nombre_comercial: z.string().trim()
+        .min(1, 'El nombre comercial es obligatorio')
+        .max(32, 'Máximo 32 caracteres: va impreso en el encabezado de la tirilla del boleto y debe caber en el papel más angosto que soporta la impresora (32 columnas)'),
     rnc: z.string().trim().optional().nullable(),
     direccion: z.string().trim().optional().nullable(),
     telefono: z.string().trim().optional().nullable(),

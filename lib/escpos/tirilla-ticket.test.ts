@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { construirTirillaTicket, type TirillaInput } from './tirilla-ticket'
+import { aBytes } from './codificacion'
 import type { TicketSnapshot } from '@/lib/types'
 
 const snapshot: TicketSnapshot = {
@@ -123,5 +124,71 @@ describe('construirTirillaTicket', () => {
         for (const l of preview.split('\n')) {
             expect(l.length).toBeLessThanOrEqual(32)
         }
+    })
+})
+
+// `ESC ! n` es una máscara de bits: TAMANO.MAXIMO activa doble ancho, así
+// que a `cols` columnas físicas solo caben `cols / 2` caracteres. El número
+// de boleto "huérfano" (sin sorteo asignado) llega a 22 caracteres
+// (`{prefijo hasta 12}-SN-{6 dígitos}`), que no siempre entra en tamaño
+// máximo. Estas pruebas verifican que, aun así, el número nunca se recorta
+// —se degrada de tamaño— y que la vista previa no oculta ningún recorte que
+// sí ocurra en los bytes reales (el nombre comercial sí puede recortarse).
+describe('construirTirillaTicket — ancho físico real de los modos de impresión', () => {
+    // 12 (máximo del prefijo) + '-SN-' (4) + 6 dígitos = 22 caracteres.
+    const numeroHuerfanoMaximo = 'ABCDEFGHIJKL-SN-000123'
+
+    it('nunca trunca el número del boleto a 48 columnas, aunque no quepa en tamaño máximo', () => {
+        const { bytes, preview } = construirTirillaTicket({
+            ...base,
+            numeroFormateado: numeroHuerfanoMaximo,
+            anchoCols: 48,
+        })
+        expect(bytes.includes(aBytes(numeroHuerfanoMaximo, 'cp850'))).toBe(true)
+        expect(preview).toContain(numeroHuerfanoMaximo)
+    })
+
+    it('nunca trunca el número del boleto a 32 columnas (degrada de MAXIMO a DOBLE)', () => {
+        const { bytes, preview } = construirTirillaTicket({
+            ...base,
+            numeroFormateado: numeroHuerfanoMaximo,
+            anchoCols: 32,
+        })
+        expect(bytes.includes(aBytes(numeroHuerfanoMaximo, 'cp850'))).toBe(true)
+        expect(preview).toContain(numeroHuerfanoMaximo)
+    })
+
+    it('recorta el nombre comercial demasiado largo a 48 columnas, igual en preview y en bytes', () => {
+        const nombreLargo = 'Inversiones y Distribuidora Cordero del Caribe SRL'
+        const esperado = nombreLargo.toUpperCase().slice(0, 48)
+
+        const { bytes, preview } = construirTirillaTicket({
+            ...base,
+            anchoCols: 48,
+            snapshot: { ...snapshot, negocio: { ...snapshot.negocio, nombre_comercial: nombreLargo } },
+        })
+
+        expect(preview).toContain(esperado)
+        expect(bytes.includes(aBytes(esperado, 'cp850'))).toBe(true)
+        // El nombre completo (sin recortar) no debe aparecer en ningún lado:
+        // si el preview lo recorta, los bytes reales también deben recortarlo.
+        expect(bytes.includes(aBytes(nombreLargo.toUpperCase(), 'cp850'))).toBe(false)
+        expect(preview).not.toContain(nombreLargo.toUpperCase())
+    })
+
+    it('recorta el nombre comercial demasiado largo a 32 columnas, igual en preview y en bytes', () => {
+        const nombreLargo = 'Inversiones y Distribuidora Cordero del Caribe SRL'
+        const esperado = nombreLargo.toUpperCase().slice(0, 32)
+
+        const { bytes, preview } = construirTirillaTicket({
+            ...base,
+            anchoCols: 32,
+            snapshot: { ...snapshot, negocio: { ...snapshot.negocio, nombre_comercial: nombreLargo } },
+        })
+
+        expect(preview).toContain(esperado)
+        expect(bytes.includes(aBytes(esperado, 'cp850'))).toBe(true)
+        expect(bytes.includes(aBytes(nombreLargo.toUpperCase(), 'cp850'))).toBe(false)
+        expect(preview).not.toContain(nombreLargo.toUpperCase())
     })
 })
