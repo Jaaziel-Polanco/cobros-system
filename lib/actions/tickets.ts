@@ -69,11 +69,16 @@ export async function emitirTicketDePago(
 ): Promise<{ ticket: Ticket; yaExistia: boolean }> {
     const { supabase, user, profile, permisos } = await perfilActual()
 
-    // Mismo permiso que emitirTicketManual: ambas acciones tienen el mismo
-    // efecto (crear un Ticket y consumir un número del sorteo activo), la
-    // única diferencia es qué las dispara. Sin este chequeo, un agente sin
-    // el permiso de boletos podía igual emitir uno con solo registrar un pago.
-    if (!permisos.generar_ticket_manual) {
+    // Flujo automático: se dispara desde el modal que sale justo después de
+    // registrar un pago. Se gatea con ver_tickets, no con
+    // generar_ticket_manual: ese permiso significa "no puede crear boletos
+    // de la nada" y es para emitirTicketManual/anularTicket, que crean o
+    // destruyen boletos FUERA del flujo de cobro. Gatear el flujo normal
+    // con generar_ticket_manual le rompería el cobro a cualquier agente al
+    // que se le quite ese permiso. Si un agente no puede ni ver boletos, no
+    // tiene sentido emitirle uno; y el derecho a registrar el pago que
+    // origina este boleto ya lo controla registrar_pagos aguas arriba.
+    if (!permisos.ver_tickets) {
         throw new Error('No tienes permiso para emitir boletos')
     }
 
