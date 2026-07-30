@@ -62,7 +62,15 @@ CRON_SECRET=un_secreto_largo_y_aleatorio
 CRON_SCHEDULE=0 8,18 * * *    # 8 AM y 6 PM hora RD, todos los días
 PORT=3000
 HOSTNAME=0.0.0.0
+APP_PUBLIC_URL=http://localhost:3000   # Boletería: base de los enlaces públicos de boletos
 ```
+
+> **Nota:** `.env.example` no está trackeado en git en este repositorio (`.gitignore` excluye
+> `.env*`). Esta guía es la referencia versionada de las variables disponibles; si copias
+> `.env.example` desde otra máquina o lo reconstruyes, incluye también `APP_PUBLIC_URL` (ver
+> arriba). Si el servidor no está expuesto a internet, deja el valor de red local: mientras
+> `modo_adjunto = 'base64'` en la configuración de boletos, el PDF viaja dentro del payload
+> del webhook y nadie necesita alcanzar esta URL.
 
 #### Generar un CRON_SECRET seguro:
 

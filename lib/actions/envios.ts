@@ -97,6 +97,7 @@ export async function enviarRecordatorioManual(deudaId: string) {
         .from('webhooks')
         .select('*')
         .eq('activo', true)
+        .eq('evento', 'cobranza')
         .maybeSingle()
 
     if (!webhook) throw new Error('No hay webhook activo configurado')
@@ -259,6 +260,7 @@ export async function intentarEnvioInmediato(deudaId: string): Promise<void> {
             .from('webhooks')
             .select('*')
             .eq('activo', true)
+            .eq('evento', 'cobranza')
             .maybeSingle()
 
         if (!webhook) {

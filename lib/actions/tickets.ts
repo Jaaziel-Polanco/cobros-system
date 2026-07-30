@@ -9,6 +9,10 @@ import {
     type TicketManualFormData,
 } from '@/lib/validations/tickets'
 import type { Ticket, TicketEvento, Pago, Rol } from '@/lib/types'
+import { renderTemplate } from '@/lib/utils/template-renderer'
+import { generarTicketPdf } from '@/lib/pdf/ticket-document'
+import { formatearFechaHoraRD } from '@/lib/utils/fecha-rd'
+import type { TicketWebhookPayload, ConfiguracionTicket } from '@/lib/types'
 
 /** Lee el perfil del usuario de la sesión. Lanza si no hay sesión. */
 async function perfilActual() {
@@ -249,4 +253,273 @@ export async function getPagosSinTicket(clienteId: string): Promise<Pago[]> {
 
     const boletados = new Set((conBoleto ?? []).map(t => t.pago_id))
     return pagos.filter(p => !boletados.has(p.id)) as Pago[]
+}
+
+// ─── ENVÍO POR WHATSAPP ───────────────────────────────────────
+
+/** Un teléfono sirve si tiene al menos 10 dígitos tras quitar el formato. */
+export async function telefonoEsValido(telefono?: string | null): Promise<boolean> {
+    if (!telefono) return false
+    return telefono.replace(/\D/g, '').length >= 10
+}
+
+async function postWebhook(
+    url: string,
+    headers: Record<string, string>,
+    payload: unknown,
+): Promise<{ ok: boolean; status: number; body: string }> {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 30_000)
+    try {
+        const resp = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...headers },
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+        })
+        return { ok: resp.ok, status: resp.status, body: await resp.text() }
+    } catch (e) {
+        return {
+            ok: false,
+            status: 0,
+            body: e instanceof DOMException && e.name === 'AbortError'
+                ? 'Timeout: el webhook no respondió en 30 segundos'
+                : String(e),
+        }
+    } finally {
+        clearTimeout(timer)
+    }
+}
+
+/**
+ * Construye el payload del webhook de boletos.
+ * El PDF viaja en base64 dentro del cuerpo (modo por defecto) porque el
+ * servidor no está expuesto a internet y el POST es saliente.
+ */
+async function construirPayloadTicket(
+    ticket: Ticket,
+    cfg: ConfiguracionTicket,
+    plantillaContenido: string,
+    reenvio: boolean,
+): Promise<TicketWebhookPayload> {
+    const s = ticket.snapshot
+    const base = process.env.APP_PUBLIC_URL ?? 'http://localhost:3000'
+    const urlPublica = `${base}/t/${ticket.token_publico}`
+
+    const mensaje = renderTemplate(plantillaContenido, {
+        nombre: s.cliente.nombre,
+        apellido: s.cliente.apellido,
+        ticket_numero: ticket.numero_formateado,
+        sorteo: s.sorteo?.nombre ?? 'nuestro sorteo',
+        premio: s.sorteo?.premio ?? '',
+        fecha: formatearFechaHoraRD(ticket.emitido_at),
+        url_terminos: cfg.url_terminos ?? `${base}/terminos`,
+    })
+
+    const incluirBase64 = cfg.modo_adjunto === 'base64' || cfg.modo_adjunto === 'ambos'
+    const incluirUrl = cfg.modo_adjunto === 'url' || cfg.modo_adjunto === 'ambos'
+
+    let adjunto: TicketWebhookPayload['adjunto'] = null
+    if (incluirBase64) {
+        const pdf = await generarTicketPdf(ticket)
+        adjunto = {
+            tipo: 'pdf',
+            nombre: `boleto-${ticket.numero_formateado}.pdf`,
+            base64: pdf.toString('base64'),
+        }
+    }
+
+    return {
+        evento: 'ticket_emitido',
+        timestamp: new Date().toISOString(),
+        enviado_por: reenvio ? 'manual' : 'sistema',
+        reenvio,
+        cliente: {
+            id: s.cliente.id,
+            nombre: s.cliente.nombre,
+            apellido: s.cliente.apellido,
+            telefono: s.cliente.telefono ?? '',
+        },
+        ticket: {
+            id: ticket.id,
+            numero: ticket.numero_formateado,
+            sorteo: s.sorteo?.nombre ?? null,
+            emitido_at: ticket.emitido_at,
+        },
+        mensaje,
+        url_terminos: cfg.url_terminos ?? null,
+        url_publica: incluirUrl ? urlPublica : null,
+        adjunto,
+    }
+}
+
+export async function enviarTicketWhatsApp(
+    ticketId: string,
+    opciones?: { reenvio?: boolean },
+): Promise<{ ok: boolean; estado: number }> {
+    const { supabase, user } = await perfilActual()
+    const reenvio = opciones?.reenvio ?? false
+
+    const { data: ticket, error: ticketError } = await supabase
+        .from('tickets')
+        .select('*')
+        .eq('id', ticketId)
+        .single()
+
+    if (ticketError || !ticket) throw new Error('Boleto no encontrado')
+    if (ticket.estado === 'anulado') throw new Error('El boleto está anulado')
+
+    const t = ticket as Ticket
+    if (!(await telefonoEsValido(t.snapshot.cliente.telefono))) {
+        throw new Error('El cliente no tiene un teléfono válido registrado')
+    }
+
+    const { data: cfg } = await supabase
+        .from('configuracion_ticket').select('*').eq('id', true).single()
+    if (!cfg) throw new Error('Falta configurar el módulo de boletos')
+
+    const { data: plantilla } = await supabase
+        .from('plantillas_mensaje')
+        .select('*')
+        .eq('etapa', 'ticket')
+        .eq('activo', true)
+        .maybeSingle()
+    if (!plantilla) throw new Error('No hay plantilla activa para boletos')
+
+    const { data: webhook } = await supabase
+        .from('webhooks')
+        .select('*')
+        .eq('activo', true)
+        .eq('evento', 'ticket')
+        .maybeSingle()
+    if (!webhook) {
+        throw new Error('No hay webhook activo configurado para boletos')
+    }
+
+    const payload = await construirPayloadTicket(
+        t, cfg as ConfiguracionTicket, plantilla.contenido, reenvio,
+    )
+
+    const resultado = await postWebhook(webhook.url, webhook.headers ?? {}, payload)
+
+    // El base64 del PDF NO se guarda en el log: solo su tamaño.
+    const { adjunto, ...payloadSinPdf } = payload
+    await supabase.from('ticket_eventos').insert({
+        ticket_id: t.id,
+        tipo: 'enviado_wa',
+        estado: resultado.ok ? 'ok' : 'error',
+        es_copia: reenvio,
+        detalle: reenvio ? 'Reenvío manual' : 'Envío automático',
+        payload: {
+            ...payloadSinPdf,
+            adjunto: adjunto
+                ? { tipo: adjunto.tipo, nombre: adjunto.nombre, bytes: adjunto.base64.length }
+                : null,
+        },
+        respuesta_http: resultado.status || null,
+        respuesta_body: resultado.body?.slice(0, 2000) ?? null,
+        usuario_id: user.id,
+    })
+
+    if (resultado.ok) {
+        await supabase
+            .from('tickets')
+            .update({ veces_enviado: t.veces_enviado + 1 })
+            .eq('id', t.id)
+    }
+
+    revalidatePath(`/clientes/${t.cliente_id}`)
+    revalidatePath('/tickets')
+
+    if (!resultado.ok) {
+        throw new Error(`El webhook respondió ${resultado.status}: ${resultado.body?.slice(0, 200)}`)
+    }
+
+    return { ok: true, estado: resultado.status }
+}
+
+/**
+ * Envía un boleto ficticio al webhook de boletos para averiguar
+ * empíricamente qué acepta el proveedor de WhatsApp. No persiste nada.
+ */
+export async function enviarBoletoDePrueba(): Promise<{
+    ok: boolean; estado: number; cuerpo: string
+}> {
+    const { supabase, permisos } = await perfilActual()
+    if (!permisos.generar_ticket_manual) {
+        throw new Error('No tienes permiso para enviar pruebas')
+    }
+
+    const { data: cfg } = await supabase
+        .from('configuracion_ticket').select('*').eq('id', true).single()
+    if (!cfg) throw new Error('Falta configurar el módulo de boletos')
+
+    const { data: plantilla } = await supabase
+        .from('plantillas_mensaje')
+        .select('*').eq('etapa', 'ticket').eq('activo', true).maybeSingle()
+    if (!plantilla) throw new Error('No hay plantilla activa para boletos')
+
+    const { data: webhook } = await supabase
+        .from('webhooks')
+        .select('*').eq('activo', true).eq('evento', 'ticket').maybeSingle()
+    if (!webhook) throw new Error('No hay webhook activo configurado para boletos')
+
+    const c = cfg as ConfiguracionTicket
+    const ahora = new Date().toISOString()
+
+    const ticketFicticio: Ticket = {
+        id: '00000000-0000-0000-0000-000000000000',
+        numero: 0,
+        numero_formateado: `${c.prefijo_numeracion}-PRUEBA`,
+        sorteo_id: null,
+        cliente_id: '00000000-0000-0000-0000-000000000000',
+        pago_id: null,
+        deuda_id: null,
+        origen: 'manual',
+        motivo: 'Boleto de prueba',
+        estado: 'valido',
+        anulado_por: null,
+        anulado_at: null,
+        motivo_anulacion: null,
+        token_publico: 'prueba',
+        emitido_por: null,
+        emitido_at: ahora,
+        veces_enviado: 0,
+        veces_impreso: 0,
+        created_at: ahora,
+        snapshot: {
+            cliente: {
+                id: '00000000-0000-0000-0000-000000000000',
+                nombre: 'Cliente',
+                apellido: 'de Prueba',
+                telefono: null,
+                dni_ruc: null,
+            },
+            sorteo: null,
+            negocio: {
+                nombre_comercial: c.nombre_comercial,
+                rnc: c.rnc,
+                direccion: c.direccion,
+                telefono: c.telefono,
+                texto_legal: c.texto_legal,
+                url_terminos: c.url_terminos,
+                pie_impresion: c.pie_impresion,
+                logo_url: c.logo_url,
+            },
+            emitido_at_rd: formatearFechaHoraRD(ahora),
+            origen: 'manual',
+            version_snapshot: 1,
+        },
+    }
+
+    const payload = await construirPayloadTicket(
+        ticketFicticio, c, plantilla.contenido, false,
+    )
+    const resultado = await postWebhook(webhook.url, webhook.headers ?? {}, payload)
+
+    return {
+        ok: resultado.ok,
+        estado: resultado.status,
+        cuerpo: resultado.body?.slice(0, 1000) ?? '',
+    }
 }
