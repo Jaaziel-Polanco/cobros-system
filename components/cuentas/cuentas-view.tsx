@@ -19,6 +19,7 @@ import {
     AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
+import { TicketConfirmDialog } from '@/components/tickets/ticket-confirm-dialog'
 import { Label } from '@/components/ui/label'
 import { Plus, Search, MoreHorizontal, Pencil, Send, PauseCircle, PlayCircle, CheckCircle, DollarSign, Clock } from 'lucide-react'
 import { formatMonto, formatFecha } from '@/lib/utils/template-renderer'
@@ -57,9 +58,12 @@ export function CuentasView({ deudas, clientes, agentes }: CuentasViewProps) {
     const [estadoFilter, setEstadoFilter] = useState('')
     const [formOpen, setFormOpen] = useState(false)
     const [editDeuda, setEditDeuda] = useState<Deuda | undefined>()
-    const [pagoDialog, setPagoDialog] = useState<{ id: string; saldo: number; cuota: number | null; monto_original: number; frecuencia: FrecuenciaPago } | null>(null)
+    const [pagoDialog, setPagoDialog] = useState<{ id: string; saldo: number; cuota: number | null; monto_original: number; frecuencia: FrecuenciaPago; cliente?: ClienteSimple } | null>(null)
     const [montoPago, setMontoPago] = useState('')
     const [isPending, startTransition] = useTransition()
+    const [ticketDialog, setTicketDialog] = useState<{
+        pagoId: string; nombre: string; telefono: string | null
+    } | null>(null)
 
     const filtered = deudas.filter(d => {
         const term = search.toLowerCase()
@@ -112,8 +116,15 @@ export function CuentasView({ deudas, clientes, agentes }: CuentasViewProps) {
             const periodo = fc.toISOString().split('T')[0]
             startTransition(async () => {
                 try {
-                    await marcarPagoPeriodo(pagoDialog.id, periodo, 'Pago registrado desde cuentas')
+                    const { pagoId } = await marcarPagoPeriodo(
+                        pagoDialog.id, periodo, 'Pago registrado desde cuentas',
+                    )
                     toast.success('Pago registrado correctamente')
+                    setTicketDialog({
+                        pagoId,
+                        nombre: `${pagoDialog.cliente?.nombre ?? ''} ${pagoDialog.cliente?.apellido ?? ''}`.trim(),
+                        telefono: pagoDialog.cliente?.telefono ?? null,
+                    })
                     setPagoDialog(null)
                     setMontoPago('')
                 } catch (e: unknown) {
@@ -126,8 +137,13 @@ export function CuentasView({ deudas, clientes, agentes }: CuentasViewProps) {
         if (isNaN(monto) || monto <= 0) { toast.error('Monto inválido'); return }
         startTransition(async () => {
             try {
-                await registrarPago(pagoDialog.id, monto)
+                const { pagoId } = await registrarPago(pagoDialog.id, monto)
                 toast.success('Pago registrado correctamente')
+                setTicketDialog({
+                    pagoId,
+                    nombre: `${pagoDialog.cliente?.nombre ?? ''} ${pagoDialog.cliente?.apellido ?? ''}`.trim(),
+                    telefono: pagoDialog.cliente?.telefono ?? null,
+                })
                 setPagoDialog(null)
                 setMontoPago('')
             } catch (e: unknown) {
@@ -270,6 +286,7 @@ export function CuentasView({ deudas, clientes, agentes }: CuentasViewProps) {
                                                                         cuota: d.cuota_mensual,
                                                                         monto_original: d.monto_original,
                                                                         frecuencia: (d.frecuencia_pago ?? 'mensual') as FrecuenciaPago,
+                                                        cliente: d.cliente,
                                                                     })
                                                                     setMontoPago(d.cuota_mensual ? String(d.cuota_mensual) : '')
                                                                 }}>
@@ -357,6 +374,14 @@ export function CuentasView({ deudas, clientes, agentes }: CuentasViewProps) {
                     </DialogFooter>
                 </DialogContent>
             </Dialog>
+
+            <TicketConfirmDialog
+                abierto={!!ticketDialog}
+                onCerrar={() => setTicketDialog(null)}
+                pagoId={ticketDialog?.pagoId ?? null}
+                clienteNombre={ticketDialog?.nombre ?? ''}
+                clienteTelefono={ticketDialog?.telefono ?? null}
+            />
         </>
     )
 }
