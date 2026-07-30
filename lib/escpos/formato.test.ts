@@ -41,6 +41,23 @@ describe('dosColumnas', () => {
         expect(r.length).toBe(48)
         expect(r.endsWith('Y'.repeat(20))).toBe(true)
     })
+
+    it('recorta el valor cuando por sí solo excede el ancho del papel', () => {
+        const r = dosColumnas('Etiqueta', 'D'.repeat(60), 48)
+        expect(r.length).toBe(48)
+        expect(r).toBe('D'.repeat(48))
+    })
+
+    it('recorta el valor cuando izquierda y derecha son ambas más largas que el ancho', () => {
+        const r = dosColumnas('I'.repeat(60), 'D'.repeat(60), 48)
+        expect(r.length).toBe(48)
+    })
+
+    it('respeta el ancho cuando izquierda y derecha suman exactamente cols', () => {
+        const r = dosColumnas('X'.repeat(20), 'Y'.repeat(28), 48)
+        expect(r.length).toBe(48)
+        expect(r.endsWith('Y'.repeat(28))).toBe(true)
+    })
 })
 
 describe('envolver', () => {

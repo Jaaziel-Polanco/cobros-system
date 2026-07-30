@@ -26,6 +26,16 @@ function representable(ch: string, iconvName: string): boolean {
  * Sustituye los caracteres que el codepage no puede representar.
  * Primero intenta quitarles los diacríticos ('ā' → 'a'); si eso tampoco
  * funciona, los reemplaza por '?'.
+ *
+ * NOTA (no resuelto, exposición baja): este `for...of` itera por punto de
+ * código, así que un carácter astral (fuera del plano básico, como la
+ * mayoría de los emoji) se procesa como una sola unidad aquí, pero
+ * `texto.length` —que es lo que usan `centrar` y `dosColumnas` de
+ * `formato.ts` para calcular el relleno— lo cuenta como 2 (un par
+ * subrogado UTF-16), mientras que tras el fold se convierte en 1 solo byte
+ * ('?'). Un nombre de cliente con un emoji desalinearía esa línea en una
+ * columna. No es habitual en nombres reales y no se arregla aquí; si
+ * aparece una línea torcida en producción, empezar a mirar por aquí.
  */
 function folder(texto: string, iconvName: string): string {
     let salida = ''

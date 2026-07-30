@@ -12,6 +12,13 @@ export function centrar(texto: string, cols: number): string {
 
 /** Etiqueta pegada a la izquierda y valor pegado a la derecha. */
 export function dosColumnas(izq: string, der: string, cols: number): string {
+    // Si el valor por sí solo ya excede el ancho del papel, se recorta y se
+    // descarta la etiqueta por completo. Se prioriza el valor (cédula, monto,
+    // número de boleto) sobre la etiqueta porque es el dato que importa; dejar
+    // que la línea se desborde no es una opción, porque la impresora la
+    // envolvería o la cortaría a su antojo, no como decide este código.
+    if (der.length > cols) return der.slice(0, cols)
+
     const disponible = Math.max(0, cols - der.length - 1)
     const izqRecortado = izq.slice(0, disponible)
     const relleno = cols - izqRecortado.length - der.length
