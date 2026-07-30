@@ -41,9 +41,44 @@ const estilos = StyleSheet.create({
     },
 })
 
+/**
+ * Enmascara un documento de identidad (cédula/RNC) dejando visibles solo
+ * los dos últimos dígitos; el resto de los dígitos se sustituye por '*',
+ * conservando cualquier separador (guiones, espacios, etc.) en su posición
+ * original para que el formato se siga reconociendo.
+ *
+ * Se aplica solo a la presentación en el PDF: el snapshot y la base de
+ * datos guardan el valor completo. El PDF viaja por WhatsApp, se reenvía y
+ * queda en capturas y respaldos de chats; el boleto es solo un número de
+ * rifa, así que la cédula completa no hace falta ahí. Volver a mostrarla
+ * entera, si el negocio lo decide más adelante, es un cambio de una línea.
+ */
+export function enmascararDocumento(valor: string | null | undefined): string | null {
+    if (!valor) return null
+
+    const totalDigitos = (valor.match(/\d/g) ?? []).length
+    // Con 2 dígitos o menos no queda nada que ocultar más allá de "los
+    // últimos dos": se devuelve tal cual, sin asteriscos.
+    if (totalDigitos <= 2) return valor
+
+    const primerDigitoVisible = totalDigitos - 2
+    let vistos = 0
+    let resultado = ''
+    for (const c of valor) {
+        if (/\d/.test(c)) {
+            resultado += vistos < primerDigitoVisible ? '*' : c
+            vistos++
+        } else {
+            resultado += c
+        }
+    }
+    return resultado
+}
+
 export function TicketDocument({ ticket }: { ticket: Ticket }) {
     const s = ticket.snapshot
     const cliente = `${s.cliente.nombre} ${s.cliente.apellido}`
+    const documentoEnmascarado = enmascararDocumento(s.cliente.dni_ruc)
 
     return (
         <Document
@@ -83,10 +118,10 @@ export function TicketDocument({ ticket }: { ticket: Ticket }) {
                         <Text style={estilos.etiqueta}>Cliente</Text>
                         <Text style={estilos.valor}>{cliente}</Text>
                     </View>
-                    {s.cliente.dni_ruc && (
+                    {documentoEnmascarado && (
                         <View style={estilos.fila}>
                             <Text style={estilos.etiqueta}>Cédula / RNC</Text>
-                            <Text style={estilos.valor}>{s.cliente.dni_ruc}</Text>
+                            <Text style={estilos.valor}>{documentoEnmascarado}</Text>
                         </View>
                     )}
                     <View style={estilos.fila}>
