@@ -3,6 +3,14 @@ import { updateSession } from '@/lib/supabase/middleware'
 
 const PUBLIC_PATHS = ['/login']
 
+/**
+ * Rutas sin autenticación que, a diferencia de PUBLIC_PATHS, NO redirigen al
+ * dashboard cuando ya hay sesión: un admin logueado debe poder abrir el
+ * boleto de un cliente. `/api/print/*` se autentica por token de estación
+ * dentro de su propio route handler.
+ */
+const OPEN_PATHS = ['/t/', '/terminos', '/api/tickets/', '/api/print/']
+
 function verificarSecret(header: string | null): boolean {
     const expected = process.env.CRON_SECRET
     if (!expected || !header) return false
@@ -16,6 +24,10 @@ function verificarSecret(header: string | null): boolean {
 
 export async function middleware(request: NextRequest) {
     const { pathname } = request.nextUrl
+
+    if (OPEN_PATHS.some(p => pathname.startsWith(p))) {
+        return NextResponse.next()
+    }
 
     if (PUBLIC_PATHS.some(p => pathname.startsWith(p))) {
         const { supabaseResponse, user } = await updateSession(request)
