@@ -78,16 +78,58 @@
 --     '1 month') da el 28 de febrero. El comportamiento de Postgres es
 --     el correcto y es el que queda vigente.
 -- ══════════════════════════════════════════════════════════════
+--
+-- CORRECCIÓN POSTERIOR A REVISIÓN (mismo día, antes de aplicar la
+-- migración — nunca llegó a ejecutarse contra ninguna base real):
+--   La primera versión de esta migración rompía el botón "Pagó" del
+--   panel flotante (pagos-pendientes-panel.tsx) para deudas con
+--   monto_original > 0 y cuota_mensual = NULL — el formulario admite
+--   explícitamente esa combinación como "pago único"
+--   (components/cuentas/deuda-form.tsx:401: "Si se deja vacío, se
+--   trata como pago único"), y getDeudasConPagosPendientes() no filtra
+--   por cuota_mensual, así que esas cuentas sí aparecen en el panel.
+--
+--   El bloque de ~35 líneas de JavaScript que esta migración eliminó
+--   de marcarPagoPeriodo() no solo cubría monto_original = 0 (como
+--   asumía la primera versión de este comentario); su rama `else`
+--   ( monto_original > 0 && montoPago > 0 → falso ) también capturaba
+--   el caso "monto_original > 0 sin cuota_mensual", y ahí avanzaba
+--   fecha_corte en JS sin pasar por el RPC en absoluto. Al mover toda
+--   la lógica al RPC sin más, marcarPagoPeriodo() pasaba
+--   p_monto_pago = 0 (cuota_mensual ?? 0) sobre una deuda con
+--   monto_original > 0, y el RPC lo rechazaba con "El monto del pago
+--   debe ser mayor a 0" — el botón fallaba el 100% de las veces para
+--   ese tipo de cuenta.
+--
+--   Corrección: parámetro p_avanzar_sin_monto (ver abajo). "Marcar
+--   período pagado" (marcarPagoPeriodo) y "registrar un pago por
+--   monto" (registrarPago) son dos operaciones distintas: solo la
+--   primera puede avanzar fecha_corte sin dinero de por medio, y solo
+--   cuando el llamante lo pide explícitamente con esta bandera.
+--   marcarPagoPeriodo() siempre la manda en TRUE — incluso cuando la
+--   deuda sí tiene cuota_mensual, donde no cambia nada porque
+--   v_avance_corte ya iba a ser TRUE por la rama de cuota cubierta.
+--   registrarPago() nunca la manda (usa el DEFAULT FALSE), así que un
+--   pago por monto real sigue rechazando monto <= 0 exactamente igual
+--   que antes de esta corrección.
+-- ══════════════════════════════════════════════════════════════
 
 -- La firma antigua se elimina para evitar ambigüedad en las llamadas.
 DROP FUNCTION IF EXISTS public.registrar_pago_atomico(UUID, NUMERIC);
 
 CREATE OR REPLACE FUNCTION public.registrar_pago_atomico(
-    p_deuda_id       UUID,
-    p_monto_pago     NUMERIC,
-    p_periodo        TEXT DEFAULT NULL,
-    p_nota           TEXT DEFAULT NULL,
-    p_registrado_por UUID DEFAULT NULL
+    p_deuda_id          UUID,
+    p_monto_pago        NUMERIC,
+    p_periodo           TEXT DEFAULT NULL,
+    p_nota              TEXT DEFAULT NULL,
+    p_registrado_por    UUID DEFAULT NULL,
+    -- Va al final para no romper llamadas posicionales existentes.
+    -- TRUE = "marcar período pagado" sin exigir monto > 0 en deudas
+    -- con monto_original > 0 (uso: marcarPagoPeriodo cuando la deuda
+    -- no tiene cuota_mensual fija, p.ej. botón "Pagó" del panel de
+    -- pendientes). FALSE (default) = "registrar un pago por monto":
+    -- exige monto > 0 en deudas con monto_original > 0, sin excepción.
+    p_avanzar_sin_monto BOOLEAN DEFAULT FALSE
 )
 RETURNS JSONB AS $$
 DECLARE
@@ -114,7 +156,11 @@ BEGIN
         RETURN jsonb_build_object('ok', false, 'error', 'Deuda no encontrada o no está activa');
     END IF;
 
-    IF v_deuda.monto_original > 0 AND p_monto_pago <= 0 THEN
+    -- p_avanzar_sin_monto = TRUE deja pasar monto 0 (o negativo-cero) en
+    -- deudas con monto_original > 0: es "marcar período pagado", no un
+    -- pago real. Sin la bandera (DEFAULT FALSE), el rechazo es el de
+    -- siempre — un pago por monto real nunca puede ser <= 0.
+    IF v_deuda.monto_original > 0 AND p_monto_pago <= 0 AND NOT p_avanzar_sin_monto THEN
         RETURN jsonb_build_object('ok', false, 'error', 'El monto del pago debe ser mayor a 0');
     END IF;
 
@@ -131,6 +177,13 @@ BEGIN
        AND v_nuevo_saldo > 0 THEN
         v_avance_corte := TRUE;
     ELSIF v_deuda.monto_original = 0 THEN
+        v_avance_corte := TRUE;
+    END IF;
+
+    -- "Marcar período pagado" siempre avanza fecha_corte, tenga o no
+    -- tenga cuota_mensual la deuda. Si ya era TRUE por alguna de las
+    -- ramas de arriba, esto no cambia nada.
+    IF p_avanzar_sin_monto THEN
         v_avance_corte := TRUE;
     END IF;
 

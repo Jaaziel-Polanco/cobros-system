@@ -185,6 +185,11 @@ export async function marcarPagoPeriodo(deudaId: string, periodo: string, nota?:
         p_periodo: periodo,
         p_nota: nota ?? null,
         p_registrado_por: user?.id ?? null,
+        // "Marcar período pagado" puede avanzar fecha_corte sin dinero
+        // de por medio (deudas con monto pero sin cuota_mensual fija,
+        // p.ej. el botón "Pagó" del panel de pendientes). registrarPago()
+        // NO manda esta bandera: un pago por monto siempre debe ser > 0.
+        p_avanzar_sin_monto: true,
     })
 
     if (error) throw new Error(error.message)
