@@ -9,7 +9,8 @@ import {
     UsuarioCreateDirectoSchema, UsuarioCreateDirectoFormData,
 } from '@/lib/validations/schemas'
 import { inviteUsuario, updateUsuario, deleteUsuario, updatePermisos, createUsuarioDirecto } from '@/lib/actions/usuarios'
-import { Profile, PermisosAgente } from '@/lib/types'
+import { asignarSucursalUsuario } from '@/lib/actions/estaciones'
+import { Profile, PermisosAgente, Sucursal } from '@/lib/types'
 import { getPermisos } from '@/lib/utils/permisos'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -26,11 +27,11 @@ import {
     Plus, Trash2, Loader2, ShieldCheck, UserCheck, UserX, Mail,
     Settings2, ChevronDown, ChevronUp, Eye, EyeOff, Webhook, FileText,
     BookUser, FlaskConical, Pencil, Ban, UserPlus, Send, CheckCircle2,
-    Lock, DollarSign, CreditCard, Ticket, Printer, Gift, Dices,
+    Lock, DollarSign, CreditCard, Ticket, Printer, Gift, Dices, Store,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-interface UsuariosViewProps { usuarios: Profile[] }
+interface UsuariosViewProps { usuarios: Profile[]; sucursales: Sucursal[] }
 
 // ── Permisos config ─────────────────────────────────────────────
 interface PermisoConfig {
@@ -66,11 +67,12 @@ const PERMISOS_CONFIG_BOLETERIA: PermisoConfig[] = [
 
 const TODOS_PERMISOS_CONFIG = [...PERMISOS_CONFIG, ...PERMISOS_CONFIG_BOLETERIA]
 
-export function UsuariosView({ usuarios }: UsuariosViewProps) {
+export function UsuariosView({ usuarios, sucursales }: UsuariosViewProps) {
     const [dialogOpen, setDialogOpen] = useState(false)
     const [dialogTab, setDialogTab] = useState<'invitar' | 'directo'>('invitar')
     const [deleteId, setDeleteId] = useState<string | null>(null)
     const [expandedPermisos, setExpandedPermisos] = useState<string | null>(null)
+    const [sucursalPending, setSucursalPending] = useState<string | null>(null)
     const [showPwd, setShowPwd] = useState(false)
     const [showConfirm, setShowConfirm] = useState(false)
     const [isPending, startTransition] = useTransition()
@@ -151,6 +153,17 @@ export function UsuariosView({ usuarios }: UsuariosViewProps) {
                 const label = TODOS_PERMISOS_CONFIG.find(p => p.key === key)?.label ?? key
                 toast.success(`Permiso "${label}" ${!current ? 'activado' : 'desactivado'}`)
             } catch (e: unknown) { toast.error(e instanceof Error ? e.message : 'Error') }
+        })
+    }
+
+    const handleAsignarSucursal = (usuario: Profile, sucursalId: string | null) => {
+        setSucursalPending(usuario.id)
+        startTransition(async () => {
+            try {
+                await asignarSucursalUsuario(usuario.id, sucursalId)
+                toast.success(sucursalId ? 'Sucursal asignada' : 'Sucursal removida')
+            } catch (e: unknown) { toast.error(e instanceof Error ? e.message : 'Error') }
+            setSucursalPending(null)
         })
     }
 
@@ -344,6 +357,27 @@ export function UsuariosView({ usuarios }: UsuariosViewProps) {
                                             )
                                         })}
                                     </div>
+
+                                    <p className="text-xs text-slate-400 font-semibold mt-4 mb-2 flex items-center gap-1.5">
+                                        <Store className="w-3.5 h-3.5" style={{ color: '#007EC6' }} />
+                                        Sucursal
+                                        <span className="text-slate-600 font-normal">— sin sucursal asignada, el usuario no podrá imprimir boletos</span>
+                                    </p>
+                                    <Select
+                                        value={u.sucursal_id ?? '__ninguna__'}
+                                        disabled={sucursalPending === u.id}
+                                        onValueChange={v => handleAsignarSucursal(u, v === '__ninguna__' ? null : v)}
+                                    >
+                                        <SelectTrigger className="bg-white/5 border-white/10 text-white h-9 max-w-xs">
+                                            <SelectValue placeholder="Sin sucursal asignada" />
+                                        </SelectTrigger>
+                                        <SelectContent style={{ background: '#0c1d38', border: '1px solid rgba(255,255,255,0.1)', color: 'white' }}>
+                                            <SelectItem value="__ninguna__">Sin sucursal asignada</SelectItem>
+                                            {sucursales.map(s => (
+                                                <SelectItem key={s.id} value={s.id}>{s.nombre}</SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
                                 </div>
                             )}
                         </div>

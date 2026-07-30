@@ -58,6 +58,7 @@ export interface Profile {
     rol: Rol
     activo: boolean
     permisos?: PermisosAgente | null   // null before migration, populated after
+    sucursal_id?: string | null
     created_at: string
     updated_at: string
 }
