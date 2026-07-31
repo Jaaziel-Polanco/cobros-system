@@ -253,16 +253,20 @@ export function UsuariosView({ usuarios, sucursales }: UsuariosViewProps) {
 
                                 {/* Actions */}
                                 <div className="flex items-center gap-2 shrink-0 flex-wrap sm:flex-nowrap">
-                                    {!isAdmin && (
-                                        <button
-                                            onClick={() => setExpandedPermisos(isExpanded ? null : u.id)}
-                                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all duration-200 border border-[#007EC6]/30 text-[#5bbfed] hover:bg-[#007EC6]/10"
-                                        >
-                                            <Settings2 className="w-3.5 h-3.5" />
-                                            Permisos
-                                            {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                                        </button>
-                                    )}
+                                    {/* También para admins: los permisos no les aplican
+                                        (los tienen todos), pero la sucursal SÍ -- sin ella,
+                                        imprimirTicket() rechaza a cualquiera, admin incluido,
+                                        con "Pídeselo a un administrador". Antes este botón
+                                        estaba oculto para admins y no había forma de
+                                        asignarles sucursal desde ningún sitio. */}
+                                    <button
+                                        onClick={() => setExpandedPermisos(isExpanded ? null : u.id)}
+                                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all duration-200 border border-[#007EC6]/30 text-[#5bbfed] hover:bg-[#007EC6]/10"
+                                    >
+                                        <Settings2 className="w-3.5 h-3.5" />
+                                        {isAdmin ? 'Sucursal' : 'Permisos'}
+                                        {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                                    </button>
 
                                     <button
                                         onClick={() => handleToggleActivo(u)}
@@ -290,9 +294,13 @@ export function UsuariosView({ usuarios, sucursales }: UsuariosViewProps) {
                                 </div>
                             </div>
 
-                            {/* Permisos panel */}
-                            {!isAdmin && isExpanded && (
+                            {/* Panel de permisos y sucursal */}
+                            {isExpanded && (
                                 <div className="px-4 pb-4 pt-2 border-t" style={{ borderColor: 'rgba(0,126,198,0.12)' }}>
+                                    {/* Los permisos solo se dibujan para agentes: un admin
+                                        los tiene todos por definición (ver getPermisos). */}
+                                    {!isAdmin && (
+                                    <>
                                     <p className="text-xs text-slate-400 font-semibold mb-3 flex items-center gap-1.5">
                                         <Settings2 className="w-3.5 h-3.5 text-[#007EC6]" />
                                         Accesos para {u.full_name.split(' ')[0]}
@@ -357,8 +365,15 @@ export function UsuariosView({ usuarios, sucursales }: UsuariosViewProps) {
                                             )
                                         })}
                                     </div>
+                                    </>
+                                    )}
 
-                                    <p className="text-xs text-slate-400 font-semibold mt-4 mb-2 flex items-center gap-1.5">
+                                    {/* La sucursal SÍ aplica a todo el mundo, admins incluidos:
+                                        imprimirTicket() la exige sin excepción de rol. */}
+                                    <p className={cn(
+                                        'text-xs text-slate-400 font-semibold mb-2 flex items-center gap-1.5',
+                                        !isAdmin && 'mt-4',
+                                    )}>
                                         <Store className="w-3.5 h-3.5" style={{ color: '#007EC6' }} />
                                         Sucursal
                                         <span className="text-slate-600 font-normal">— sin sucursal asignada, el usuario no podrá imprimir boletos</span>
