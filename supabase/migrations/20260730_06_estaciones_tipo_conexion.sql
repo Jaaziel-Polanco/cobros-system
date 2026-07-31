@@ -39,13 +39,18 @@ COMMENT ON COLUMN public.estaciones_impresion.impresora_nombre IS
 -- La base impide una fila incoherente: una estación 'red' necesita IP,
 -- una 'windows' necesita nombre. No basta con validarlo en la interfaz
 -- ni en las Server Actions.
+--
+-- IS NOT NULL no alcanza: una cadena vacía o solo espacios pasa ese
+-- filtro igual, y una estación 'windows' guardada así solo revienta al
+-- imprimir, en la PC de la sucursal, con un error que nadie ahí puede
+-- interpretar. Por eso se exige además btrim(...) <> ''.
 ALTER TABLE public.estaciones_impresion
   DROP CONSTRAINT IF EXISTS ck_estacion_datos_conexion;
 
 ALTER TABLE public.estaciones_impresion
   ADD CONSTRAINT ck_estacion_datos_conexion
   CHECK (
-    (tipo_conexion = 'red' AND impresora_ip IS NOT NULL)
+    (tipo_conexion = 'red' AND impresora_ip IS NOT NULL AND btrim(impresora_ip) <> '')
     OR
-    (tipo_conexion = 'windows' AND impresora_nombre IS NOT NULL)
+    (tipo_conexion = 'windows' AND impresora_nombre IS NOT NULL AND btrim(impresora_nombre) <> '')
   );

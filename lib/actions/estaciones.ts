@@ -180,6 +180,12 @@ export async function crearEstacion(input: {
         if (error.code === '23505') {
             throw new Error('Esa sucursal ya tiene una estación activa')
         }
+        if (error.code === '23514') {
+            // ck_estacion_datos_conexion: no debería dispararse porque
+            // validarConexion() ya rechazó los datos antes de llegar aquí,
+            // pero si algo se cuela no debe filtrar el mensaje crudo de Postgres.
+            throw new Error('Los datos de conexión no son válidos para el tipo de estación elegido')
+        }
         throw new Error(error.message)
     }
 
@@ -221,6 +227,12 @@ export async function actualizarEstacion(
     if (error) {
         if (error.code === '23505') {
             throw new Error('Esa sucursal ya tiene una estación activa')
+        }
+        if (error.code === '23514') {
+            // ck_estacion_datos_conexion: no debería dispararse porque
+            // validarConexion() ya rechazó los datos antes de llegar aquí,
+            // pero si algo se cuela no debe filtrar el mensaje crudo de Postgres.
+            throw new Error('Los datos de conexión no son válidos para el tipo de estación elegido')
         }
         throw new Error(error.message)
     }
