@@ -12,10 +12,50 @@
 
 **Requisito previo:** el Plan 1 debe estar completo y verificado.
 
+## Cambio de diseño posterior a la Tarea 5: dos tipos de conexión
+
+> El plan original asumía que la impresora sería un dispositivo de red con IP propia,
+> copiando la topología del servicio de restaurante de referencia. **El dueño del proyecto
+> confirmó después que la impresora irá conectada directamente a la PC de la sucursal.**
+>
+> No hay IP a la que apuntar: hay que pasar por el spooler de Windows, mandándole los bytes
+> en crudo a la impresora instalada por su nombre. Es la misma tirilla y los mismos bytes
+> ESC/POS; solo cambia el último tramo del agente.
+>
+> **Se soportan las dos**, elegidas por estación:
+>
+> | Tipo | Datos que necesita | Cuándo |
+> |---|---|---|
+> | `red` | `impresora_ip`, `impresora_port` | Impresora con puerto Ethernet, como en el restaurante |
+> | `windows` | `impresora_nombre` | Impresora conectada por USB e instalada en Windows |
+>
+> Mantener las dos cuesta poco y permite que cada una de las 2 sucursales elija. La ruta de
+> red ya está construida y verificada; la de Windows se añade.
+>
+> **Tareas afectadas:** la 3 (esquema, acciones y pantalla de estaciones), la 4 (lo que el
+> `hello` devuelve al agente) y la 6 (el agente propiamente dicho).
+>
+> **Requisito para la ruta `windows`:** la impresora debe aparecer en «Impresoras y
+> escáneres» con su driver instalado, que es el caso normal de una POS. Si Windows solo la ve
+> como dispositivo USB genérico, haría falta libusb y cambiar el driver con Zadig — bastante
+> más incómodo y fuera del alcance de este plan.
+>
+> **Simulador.** Como no hay impresora disponible durante el desarrollo, la Tarea 6 incluye
+> un simulador que permite verificar el agente de punta a punta sin hardware:
+>
+> - un servidor TCP que escucha en el 9100, recibe los bytes y dibuja en consola cómo
+>   quedaría el papel;
+> - un modo del agente que vuelca los bytes a un archivo en vez de imprimirlos.
+>
+> Con eso se verifica el reclamo, la escritura, la confirmación, los reintentos y la
+> reconexión. Lo único que queda sin probar es que la impresora física entienda los bytes,
+> riesgo ya mitigado porque los comandos provienen del servicio de referencia que funciona
+> con ese mismo hardware.
+
 ## Global Constraints
 
 - **Ancho de papel: 80 mm = 48 columnas.** Confirmado contra el servicio de referencia `C:\Users\jaazi\OneDrive\Desktop\trabajo\printer-service`, cuyos separadores son de 48 guiones.
-- **Conexión: TCP a `ip:9100`.** No USB, no puerto serie.
+- **Dos conexiones soportadas:** TCP a `ip:9100` para impresoras de red, y spooler de Windows por nombre para impresoras conectadas directamente. Ver el cambio de diseño arriba.
 - **El agente local nunca recibe la service-role key de Supabase.** Solo un token de estación con dos operaciones permitidas.
 - **Los errores de impresión se propagan.** El servicio de referencia (`printer-service/services/escpos.ts:14-25`) resuelve la promesa tanto en `error` como en `timeout`, y por eso marca como impreso lo que nunca salió. No repliques ese comportamiento.
 - **Todo el formato vive en el servidor.** El agente no construye texto ni comandos.
