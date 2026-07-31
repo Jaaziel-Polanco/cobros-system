@@ -29,6 +29,13 @@ function destinoActual(estacion: EstacionAutenticada) {
         ip: estacion.impresora_ip,
         port: estacion.impresora_port,
         nombre: estacion.impresora_nombre,
+        // Solo lo usa el simulador del agente para dibujar el papel al ancho
+        // correcto. Para imprimir de verdad es irrelevante: los bytes ya
+        // vienen maquetados desde aquí. Sin él, el simulador dibujaba
+        // siempre a 48 columnas y en una estación de 58 mm habría enseñado
+        // una tirilla que no se parece a la que sale — un depurador que
+        // miente justo cuando hace falta que no mienta.
+        ancho_cols: estacion.ancho_cols,
     }
 }
 

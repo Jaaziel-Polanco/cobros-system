@@ -24,11 +24,14 @@ export async function volcarASimulador(
     const rutaBin = path.join(CARPETA, `boleto-${marca}.bin`)
     fs.writeFileSync(rutaBin, bytes)
 
-    const { lienzo } = interpretarEscPos(bytes, 48)
+    // El ancho lo manda el servidor con el destino. Si no viene (servidor
+    // anterior a ese cambio), 48 columnas, que es el papel de 80 mm.
+    const cols = destino.ancho_cols ?? 48
+    const { lienzo } = interpretarEscPos(bytes, cols)
 
     console.log('')
     console.log(`━━━ SIMULADOR (modo archivo) — destino: ${destino.tipo_conexion === 'windows' ? destino.nombre : `${destino.ip}:${destino.port}`} ━━━`)
-    console.log(`Bytes: ${bytes.length} · guardados en ${rutaBin}`)
+    console.log(`Bytes: ${bytes.length} · ${cols} columnas · guardados en ${rutaBin}`)
     console.log(lienzo)
     console.log('━'.repeat(60))
     console.log('')

@@ -212,3 +212,54 @@ para probar el agente sin tener una impresora física a mano:
 
 Ninguno de los dos modos debe activarse en una PC de sucursal real: en
 ambos casos, nada sale impreso de verdad.
+
+### Probar el recorrido completo sin impresora
+
+Esto es lo más parecido a la sucursal que se puede montar sin tener el
+papel delante. Recorre lo mismo que recorrerá en producción —web, API,
+cola de impresión, agente, reintentos, marca de COPIA, acuse— y solo
+cambia el último paso: en vez de escribir en el spooler de Windows, los
+bytes van a un archivo.
+
+1. Con el sistema corriendo (`npm run dev` en la carpeta del proyecto),
+   entra en **Estaciones** y pulsa **Regenerar token** en la estación con
+   la que quieras probar. El token se muestra una sola vez: cópialo.
+2. En esta carpeta, copia `env.example` a `.env` y rellena:
+
+   ```
+   API_URL=http://localhost:3000
+   ESTACION_TOKEN=<el token que acabas de copiar>
+   MODO_SIMULADOR=archivo
+   LOG_LEVEL=debug
+   ```
+
+3. `npm install && npm run build && npm start`. En cuanto arranque, la
+   estación aparecerá como conectada en **Estaciones**: ese es el mismo
+   latido que verás desde la tienda.
+4. Desde el perfil de un cliente, genera un boleto y dale a **Imprimir**.
+   En la consola del agente sale la tirilla dibujada, y el archivo con los
+   bytes crudos queda en `volcado-simulador/`.
+
+Vale la pena probar también lo que no sale bien: **para el agente** y manda
+un boleto — el trabajo se queda en cola y se imprime solo cuando lo
+levantas. E **imprime dos veces el mismo boleto**: el segundo tiene que
+salir marcado `***** COPIA *****`.
+
+Cuando toque instalarlo de verdad en la tienda, lo único que cambia es
+dejar `MODO_SIMULADOR=` vacío y apuntar `API_URL` al servidor real.
+
+### Ver solo cómo queda el papel
+
+Si únicamente quieres revisar la maquetación —qué entra en 48 columnas,
+cómo parten los nombres largos, dónde cae el QR— no hace falta montar
+nada. Desde la carpeta del proyecto:
+
+```
+npm run papel
+npm run papel -- --cols 32     # papel de 58 mm
+```
+
+Construye la tirilla con el mismo código del servidor y la dibuja con el
+mismo intérprete que usa el simulador, en cuatro casos: boleto normal,
+reimpresión marcada como copia, boleto huérfano (sin sorteo abierto) y
+uno con nombre y premio largos.

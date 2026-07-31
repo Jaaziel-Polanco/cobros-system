@@ -6,6 +6,13 @@ export interface DestinoImpresora {
     ip: string | null
     port: number
     nombre: string | null
+    /**
+     * Ancho del papel en columnas. Opcional a propósito: un agente nuevo
+     * puede hablar con un servidor viejo que todavía no lo mande. Solo lo
+     * usa el simulador para dibujar; imprimir de verdad no lo necesita,
+     * porque los bytes llegan ya maquetados desde el servidor.
+     */
+    ancho_cols?: number
 }
 
 export interface TrabajoImpresion {
