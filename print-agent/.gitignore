@@ -3,4 +3,5 @@ dist/
 .env
 agente.log
 agente.log.1
+agente-sesion.log
 volcado-simulador/
