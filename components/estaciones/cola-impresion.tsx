@@ -7,7 +7,7 @@ import type { PrintJobConDetalle } from '@/lib/actions/impresion'
 import { ESTADO_PRINT_JOB_LABELS, ESTADO_PRINT_JOB_COLORS } from '@/lib/types'
 import { formatearFechaHoraRD } from '@/lib/utils/fecha-rd'
 import { Button } from '@/components/ui/button'
-import { ChevronDown, ChevronUp, RotateCw, XCircle } from 'lucide-react'
+import { AlertTriangle, Ban, ChevronDown, ChevronUp, RotateCw, XCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface ColaImpresionProps {
@@ -122,7 +122,22 @@ export function ColaImpresion({ jobs }: ColaImpresionProps) {
                         </div>
 
                         {job.error_mensaje && (
-                            <p className="mt-1.5 text-red-400">{job.error_mensaje}</p>
+                            // Cancelado es una decisión de un administrador; error es que algo
+                            // se rompió (impresora, agente, estación desactivada). El motivo de
+                            // cancelación se guarda en esta misma columna (no hay una separada),
+                            // pero no deben leerse igual de un vistazo: un admin ojeando la lista
+                            // no debe confundir una cancelación deliberada con un fallo real.
+                            job.estado === 'cancelado' ? (
+                                <p className="mt-1.5 flex items-center gap-1.5 text-slate-400">
+                                    <Ban className="h-3 w-3 shrink-0" />
+                                    {job.error_mensaje}
+                                </p>
+                            ) : (
+                                <p className="mt-1.5 flex items-center gap-1.5 text-red-400">
+                                    <AlertTriangle className="h-3 w-3 shrink-0" />
+                                    {job.error_mensaje}
+                                </p>
+                            )
                         )}
 
                         {expandido && job.preview_texto && (

@@ -337,18 +337,23 @@ export async function imprimirPaginaDePrueba(
 //
 //   · getEstadoImpresionTickets, en cambio, es de cualquiera que pueda ver
 //     el boleto: es el indicador discreto del perfil del cliente, gateado
-//     ahí por el permiso `ver_tickets`, no por rol. La policy de SELECT de
-//     print_jobs para no-admin ("print_jobs: ver los propios") solo cubría
+//     ahí por el permiso `ver_tickets`, no por rol. Ese gateo se repite
+//     DENTRO de la función (no solo "hay sesión"): la interfaz oculta el
+//     panel sin `ver_tickets`, pero quien invoque la Server Action
+//     directamente la ejecutaría igual si aquí solo se comprobara la
+//     sesión — el mismo defecto de alineación que ya se ha repetido
+//     varias veces en este plan. La policy de SELECT de print_jobs para
+//     no-admin ("print_jobs: ver los propios") solo cubría
 //     `solicitado_por = auth.uid()`; se amplió en
-//     20260730_12_print_jobs_ver_ticket_propio.sql para incluir también los
-//     trabajos de un ticket de un cliente propio, aunque los haya encolado
-//     otro usuario — si no, la cajera B no vería el estado del boleto que
-//     imprimió la cajera A para el mismo cliente.
+//     20260730_12_print_jobs_ver_ticket_propio.sql para incluir también,
+//     con `tiene_permiso('ver_tickets')` de por medio, los trabajos de un
+//     ticket de un cliente propio, aunque los haya encolado otro usuario
+//     — si no, la cajera B no vería el estado del boleto que imprimió la
+//     cajera A para el mismo cliente.
 //
-// Nada de esto necesita comprobar permisos dentro de estas funciones más
-// allá de "hay sesión": la policy es quien decide fila por fila qué ve
-// cada usuario, y exigirAdmin() es quien decide qué usuario puede llamar
-// a las tres primeras.
+// getColaImpresion / cancelarTrabajoImpresion / reencolarTrabajoImpresion
+// no necesitan comprobar ningún permiso granular más allá del rol: son
+// admin o no son nada, y exigirAdminImpresion() ya lo resuelve.
 
 /** print_jobs con lo mínimo para mostrarlo en la cola sin una segunda
  *  consulta: número de boleto (o nada, si es una página de prueba) y
@@ -516,11 +521,17 @@ export async function reencolarTrabajoImpresion(jobId: string): Promise<{ jobId:
 
 /**
  * Estado del trabajo de impresión más reciente de cada boleto, para el
- * indicador discreto del perfil del cliente. No exige ningún rol ni
- * permiso aquí: quien no deba ver el trabajo de un boleto ajeno
- * simplemente no lo recibe, por la policy de SELECT de print_jobs (ver
- * nota de permisos más arriba) — la página del cliente ya gatea todo el
- * panel con el permiso `ver_tickets` antes de llamar a esta función.
+ * indicador discreto del perfil del cliente.
+ *
+ * Exige el permiso `ver_tickets` aquí, no solo en la interfaz: la página
+ * del cliente ya gatea todo el panel con ese permiso antes de llamar a
+ * esta función, pero eso por sí solo no cierra nada — es exactamente el
+ * defecto que se ha repetido en revisión (siete veces entre el Plan 1 y
+ * el 2): la interfaz oculta el botón, pero quien invoque la Server Action
+ * directamente (DevTools, curl con su sesión) la ejecuta igual. La
+ * policy de SELECT de print_jobs (20260730_12_print_jobs_ver_ticket_propio.sql)
+ * solo mira propiedad del cliente, no el permiso — ver la nota más abajo
+ * sobre por qué no se replica `ver_tickets` ahí también.
  */
 export async function getEstadoImpresionTickets(
     ticketIds: string[],
@@ -531,6 +542,10 @@ export async function getEstadoImpresionTickets(
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return mapa
+
+    const { data: perfil } = await supabase
+        .from('profiles').select('rol, permisos').eq('id', user.id).single()
+    if (!perfil || !getPermisos(perfil).ver_tickets) return mapa
 
     const { data, error } = await supabase
         .from('print_jobs')
