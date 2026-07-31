@@ -6,6 +6,7 @@ import { DeudaSchema, DeudaFormData } from '@/lib/validations/schemas'
 import { calcularDiasAtraso, getEtapaCobranza } from '@/lib/utils/cobranza-engine'
 import { intentarEnvioInmediato } from '@/lib/actions/envios'
 import { hoyRD } from '@/lib/utils/fecha-rd'
+import { leerUltimoPagoPorDeuda } from '@/lib/supabase/ultimo-pago'
 
 export async function getDeudas() {
     const supabase = await createClient()
@@ -237,18 +238,16 @@ export async function getDeudasConPagosPendientes() {
     if (!deudas || deudas.length === 0) return []
 
     const deudaIds = deudas.map(d => d.id)
-    const { data: pagosRecientes } = await supabase
-        .from('pagos')
-        .select('deuda_id, created_at, periodo')
-        .in('deuda_id', deudaIds)
-        .order('created_at', { ascending: false })
 
-    const pagosMap = new Map<string, string>()
-    pagosRecientes?.forEach(p => {
-        if (!pagosMap.has(p.deuda_id)) {
-            pagosMap.set(p.deuda_id, p.created_at)
-        }
-    })
+    // Mismo defecto y misma corrección que el cron de recordatorios: este
+    // `select` sin paginar se quedaba con los 1000 pagos más recientes del
+    // conjunto, no con el último de cada deuda, así que las deudas cuyo
+    // último pago quedaba fuera de esa ventana salían del mapa y se
+    // trataban como impagadas. Aquí el efecto es que la deuda aparece en
+    // "pagos pendientes" habiendo cobrado. Ver lib/supabase/ultimo-pago.ts.
+    //
+    // La columna `periodo` se pedía y no se usaba; se ha dejado de pedir.
+    const pagosMap = await leerUltimoPagoPorDeuda(supabase, deudaIds)
 
     const hoy = new Date()
     hoy.setHours(0, 0, 0, 0)
