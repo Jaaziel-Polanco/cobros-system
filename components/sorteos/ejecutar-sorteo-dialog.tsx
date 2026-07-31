@@ -262,7 +262,13 @@ function EjecutarSorteoForm({
                     type="button"
                     onClick={confirmar}
                     disabled={
-                        pendiente || cargandoPool || rangoInvalido || sinBoletos
+                        // !rangoConsultable, no rangoInvalido: este ultimo solo es
+                        // true cuando HAY dos fechas y estan al reves, asi que con
+                        // una de las dos vacia daba false y el boton quedaba
+                        // habilitado sobre un rango incompleto. rangoConsultable
+                        // exige las dos fechas Y el orden correcto, que es
+                        // justo la condicion para poder sortear.
+                        pendiente || !rangoConsultable || cargandoPool || sinBoletos
                         || !Number.isFinite(cantidad) || cantidad < 1
                     }
                     className="gap-2 text-white"

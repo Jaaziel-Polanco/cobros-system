@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useTransition, useSyncExternalStore } from 'react'
+import { useState, useTransition, useSyncExternalStore, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import {
     crearSucursal, actualizarSucursal,
@@ -86,6 +87,41 @@ const leerAhoraEnElServidor = (): number | null => null
 /** Marca de tiempo que avanza sola. Vale `null` en el HTML del servidor y en
  *  la primera pintura del navegador: ahí todavía no hay reloj y el estado se
  *  muestra como «Comprobando...» en vez de inventarse una respuesta. */
+/** Cada cuánto se vuelven a pedir los datos al servidor. Más espaciado que
+ *  RELOJ_TICK_MS porque esto sí cuesta una petición. */
+const REFRESCO_DATOS_MS = 30_000
+
+/**
+ * Vuelve a pedir los datos de la página cada REFRESCO_DATOS_MS.
+ *
+ * El reloj de arriba solo resuelve la mitad del problema: detecta que una
+ * estación CADUCA («en línea» → «sin conexión»), porque eso es una resta
+ * contra la hora. La transición contraria no puede verla, porque
+ * `ultimo_heartbeat` llega de un Server Component y no cambia solo: una
+ * estación que se reconecta seguiría anunciándose caída para siempre hasta
+ * que alguien recargara a mano. Y esta es justo la pantalla donde se mira
+ * si se puede imprimir.
+ *
+ * Solo refresca con la pestaña visible: si está en segundo plano nadie lo
+ * está leyendo, y no tiene sentido gastar peticiones. Al volver a ella se
+ * refresca de inmediato, para no enseñar lo que se quedó congelado.
+ */
+function useRefrescoPeriodico() {
+    const router = useRouter()
+
+    useEffect(() => {
+        const refrescarSiVisible = () => {
+            if (document.visibilityState === 'visible') router.refresh()
+        }
+        const id = setInterval(refrescarSiVisible, REFRESCO_DATOS_MS)
+        document.addEventListener('visibilitychange', refrescarSiVisible)
+        return () => {
+            clearInterval(id)
+            document.removeEventListener('visibilitychange', refrescarSiVisible)
+        }
+    }, [router])
+}
+
 function useAhora(): number | null {
     return useSyncExternalStore(suscribirseAlReloj, leerAhora, leerAhoraEnElServidor)
 }
@@ -395,6 +431,7 @@ export function EstacionesView({ sucursales, estaciones, trabajosImpresion = [] 
     const [tokenPlano, setTokenPlano] = useState<string | null>(null)
     const [isPending, startTransition] = useTransition()
     const ahora = useAhora()
+    useRefrescoPeriodico()
 
     // Cada apertura estrena número de sesión: es la `key` del formulario, y
     // obliga a React a montarlo de cero con los datos de la fila elegida.
