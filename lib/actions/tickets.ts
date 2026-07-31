@@ -628,6 +628,15 @@ export async function asignarTicketsASorteo(
     if (!permisos.realizar_sorteo) {
         throw new Error('No tienes permiso para asignar boletos a un sorteo')
     }
+    // También `ver_sorteos`, igual que exigirPermisoSorteo() en
+    // lib/actions/sorteos.ts y que el gate de la pantalla /tickets. Quien no
+    // puede ver la lista de sorteos no puede elegir un destino con criterio;
+    // sin esta línea, el nivel 2 era más permisivo que el 1 y que el 3.
+    if (!permisos.ver_sorteos) {
+        throw new Error(
+            'Para asignar boletos a un sorteo hace falta también el permiso de ver sorteos',
+        )
+    }
     if (ticketIds.length === 0) return { asignados: 0, rechazadosPorNumero: [] }
 
     const { data, error } = await supabase.rpc('asignar_tickets_a_sorteo', {

@@ -24,7 +24,14 @@ export const EjecutarSorteoSchema = z.object({
     rango_hasta: FECHA,
     cantidad_ganadores: z.number().int().min(1).max(100),
     semilla: z.string().trim().max(120).optional(),
-    notas: z.string().trim().max(300).optional(),
+    // Aquí había un campo `notas` que se validaba y se tiraba: ningún
+    // formulario lo rellena, `ejecutarSorteo` no lo lee y el RPC
+    // `guardar_ejecucion_sorteo` no tiene parámetro donde ponerlo, así que
+    // `sorteo_ejecuciones.notas` no se escribía nunca. Un campo que el
+    // esquema acepta y el sistema descarta es peor que no tenerlo: promete
+    // que se guarda algo. Se retira del esquema; la columna sigue en la base
+    // y, cuando se quiera de verdad, hay que añadir el parámetro al RPC y
+    // pasarlo — no basta con volver a declararlo aquí.
 }).refine(d => d.rango_hasta >= d.rango_desde, {
     message: 'La fecha final no puede ser anterior a la inicial',
     path: ['rango_hasta'],

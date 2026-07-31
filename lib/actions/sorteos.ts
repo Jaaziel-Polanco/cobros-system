@@ -7,6 +7,10 @@ import { revalidatePath } from 'next/cache'
 import { getPermisos } from '@/lib/utils/permisos'
 import { rangoRDaUTC } from '@/lib/utils/fecha-rd'
 import {
+    leerTodasLasFilas, encadenable, comoLote, comoConteo,
+    type ConsultaEncadenable,
+} from '@/lib/supabase/paginacion'
+import {
     seleccionarGanadores,
     calcularPoolHash,
     ALGORITMO_SORTEO,
@@ -222,14 +226,62 @@ export async function crearSorteo(input: SorteoFormData): Promise<Sorteo> {
     return data as Sorteo
 }
 
+/**
+ * Edita un sorteo.
+ *
+ * Las dos reglas que se comprueban aquí vivían SOLO en el formulario
+ * (`sorteo-form-dialog.tsx`: el `disabled` del campo de prefijo y el hecho de
+ * que el botón Editar no se pinte para un sorteo cerrado). Un `disabled` no
+ * protege nada: esta función es una Server Action, es decir un endpoint HTTP,
+ * y acepta el payload que le manden. Tampoco hay defensa en la base (el único
+ * trigger sobre `sorteos` es `trg_sorteos_updated_at`).
+ *
+ *  1. **Prefijo congelado en cuanto se ha emitido un boleto**
+ *     (`ultimo_numero > 0`). `numero_formateado` (`NAV26-000123`) se compone
+ *     con el prefijo en el momento de emitir y se persiste: ya está impreso en
+ *     papel y enviado por WhatsApp. Renombrar el prefijo después no renombra
+ *     nada de eso — solo consigue que el boleto que el cliente tiene en la
+ *     mano deje de corresponderse con el sorteo al que pertenece.
+ *
+ *  2. **Un sorteo cerrado está sellado.** `cerrarSorteo` lo describe como "no
+ *     admite más ejecuciones ni boletos nuevos"; editarle las fechas o el
+ *     nombre después de haber publicado ganadores contradice eso.
+ *
+ * Se comprueba en la Server Action porque es la capa que TODO camino
+ * atraviesa. Hay además una migración escrita para llevar la regla a la base
+ * (supabase/migrations/20260731_01_sorteos_congelar_prefijo_y_cerrado.sql),
+ * pendiente de aplicar.
+ */
 export async function actualizarSorteo(
     id: string, input: SorteoFormData,
 ): Promise<void> {
     const { supabase } = await exigirPermisoSorteo()
     const validado = SorteoSchema.parse(input)
 
+    const { data: actual, error: errorLectura } = await supabase
+        .from('sorteos').select('estado, prefijo, ultimo_numero').eq('id', id).single()
+    if (errorLectura || !actual) throw new Error('Sorteo no encontrado')
+
+    if (actual.estado === 'cerrado') {
+        throw new Error('Un sorteo cerrado no se puede editar')
+    }
+    if (actual.ultimo_numero > 0 && validado.prefijo !== actual.prefijo) {
+        throw new Error(
+            'El prefijo no se puede cambiar: este sorteo ya emitió boletos y su ' +
+            'número está impreso o enviado tal cual al cliente',
+        )
+    }
+
     const { error } = await supabase.from('sorteos').update(validado).eq('id', id)
-    if (error) throw new Error(error.message)
+    if (error) {
+        // Mismo mensaje que crearSorteo: sin esto, al editar salía el
+        // "duplicate key value violates unique constraint uq_sorteo_prefijo"
+        // crudo de Postgres.
+        if (error.code === '23505') {
+            throw new Error('Ya existe un sorteo con ese prefijo')
+        }
+        throw new Error(error.message)
+    }
 
     revalidatePath('/sorteos')
     revalidatePath(`/sorteos/${id}`)
@@ -246,10 +298,14 @@ export async function activarSorteo(id: string): Promise<void> {
         throw new Error('Un sorteo cerrado no se puede reactivar')
     }
 
-    // El índice único uq_sorteo_activo impide dos activos a la vez
-    await supabase
+    // El índice único uq_sorteo_activo impide dos activos a la vez.
+    // El error no se ignora: si este UPDATE falla, el siguiente choca contra
+    // uq_sorteo_activo y el usuario recibiría el mensaje crudo del índice en
+    // vez de la causa real.
+    const { error: errorDegradar } = await supabase
         .from('sorteos').update({ estado: 'borrador' })
         .eq('estado', 'activo').neq('id', id)
+    if (errorDegradar) throw new Error(errorDegradar.message)
 
     const { error } = await supabase
         .from('sorteos').update({ estado: 'activo' }).eq('id', id)
@@ -284,6 +340,21 @@ export async function cerrarSorteo(id: string): Promise<void> {
  * amputado no produce un error, produce un sorteo amañado en silencio.
  * Solo salen de aquí `id`, `numero` y `cliente_id`, y ninguno de los tres
  * llega nunca al navegador.
+ *
+ * SIEMPRE paginado, por la segunda razón por la que un pool puede salir
+ * amputado sin que nada falle: PostgREST corta en 1000 filas sin error ni
+ * aviso (ver lib/supabase/paginacion.ts). Con el `.order('numero')`
+ * ascendente que había aquí, el corte era además determinista y siempre en
+ * la misma dirección: los 1000 boletos más antiguos entraban y todo boleto a
+ * partir del 1001 tenía probabilidad CERO de ganar, con `pool_count` y
+ * `pool_hash` calculados sobre el pool recortado —coherentes entre sí— de
+ * modo que "Verificar ejecución" certificaba el sesgo en verde.
+ *
+ * Se pagina por `id`, no por `numero`: el cursor tiene que ser único o los
+ * empates en la frontera de un lote se pierden. El orden canónico del
+ * módulo, `(numero, id)`, no se pierde por ello: lo aplica
+ * `seleccionarGanadores()` sobre el pool ya completo, y es un orden total
+ * real, así que el resultado no depende de en qué orden llegaran las filas.
  */
 async function leerPool(
     admin: ClienteAdmin,
@@ -293,17 +364,31 @@ async function leerPool(
 ): Promise<TicketParticipante[]> {
     const { desdeISO, hastaISO } = rangoRDaUTC(desde, hasta)
 
-    const { data, error } = await admin
-        .from('tickets')
-        .select('id, numero, cliente_id')
-        .eq('sorteo_id', sorteoId)
-        .eq('estado', 'valido')
-        .gte('emitido_at', desdeISO)
-        .lte('emitido_at', hastaISO)
-        .order('numero')
+    // Los mismos filtros para el lote y para el conteo de control, escritos
+    // una sola vez: si los dos no son idénticos, la comprobación de
+    // completitud del helper no comprueba nada.
+    const filtrar = (consulta: ConsultaEncadenable) =>
+        consulta
+            .eq('sorteo_id', sorteoId)
+            .eq('estado', 'valido')
+            .gte('emitido_at', desdeISO)
+            .lte('emitido_at', hastaISO)
 
-    if (error) throw new Error(error.message)
-    return (data ?? []) as TicketParticipante[]
+    return leerTodasLasFilas<TicketParticipante>({
+        etiqueta: 'los boletos participantes del sorteo',
+        clave: 'id',
+        lote: (cursor, limite) => {
+            const base = filtrar(
+                encadenable(admin.from('tickets').select('id, numero, cliente_id')),
+            )
+            return comoLote<TicketParticipante>(
+                (cursor ? base.gt('id', cursor) : base).order('id').limit(limite),
+            )
+        },
+        contar: () => comoConteo(filtrar(
+            encadenable(admin.from('tickets').select('id', { count: 'exact', head: true })),
+        )),
+    })
 }
 
 /**
@@ -428,6 +513,12 @@ export interface ResultadoVerificacion {
     semilla: string
     poolCount: number
     poolIntacto: boolean
+    /**
+     * true cuando la lista de participantes guardada ya no está completa
+     * (borrados en cascada). Distingue "falta información" de "la información
+     * no cuadra": sin esta distinción, un borrado se presenta como fraude.
+     */
+    faltanParticipantes: boolean
     mensaje: string
     ganadoresEsperados: string[]
     ganadoresGuardados: string[]
@@ -457,6 +548,7 @@ export async function verificarEjecucion(
             semilla: ejecucion.semilla,
             poolCount: ejecucion.pool_count,
             poolIntacto: false,
+            faltanParticipantes: false,
             mensaje: `Esta ejecución usó el algoritmo "${ejecucion.algoritmo}" y el sistema actual usa "${ALGORITMO_SORTEO}". No se puede verificar automáticamente.`,
             ganadoresEsperados: [],
             ganadoresGuardados: [],
@@ -471,15 +563,61 @@ export async function verificarEjecucion(
     // trabajo es demostrar que no hubo trampa.
     const admin = crearClienteAdmin()
 
-    const { data: participantes } = await admin
-        .from('sorteo_participantes')
-        .select('ticket_id, ticket:tickets(id, numero, cliente_id)')
-        .eq('ejecucion_id', ejecucionId)
+    // Paginado por el mismo motivo que leerPool, y con la misma urgencia
+    // invertida: aquí el truncado a 1000 de PostgREST no falsea un sorteo,
+    // falsea su auditoría. Antes de paginar leerPool este `select` no podía
+    // pasar de 1000 filas porque el propio bug se lo impedía; arreglado el
+    // primero y no este, la verificación de cualquier sorteo de más de 1000
+    // boletos habría empezado a responder "los ganadores NO coinciden" sobre
+    // ejecuciones perfectamente limpias — la acusación falsa de fraude que la
+    // pantalla existe justamente para desmentir.
+    //
+    // La clave de paginación es `ticket_id`: `sorteo_participantes` no tiene
+    // columna `id` (su PK es `(ejecucion_id, ticket_id)`), y como la consulta
+    // ya fija `ejecucion_id`, `ticket_id` es único dentro del resultado.
+    type FilaParticipante = {
+        ticket_id: string
+        ticket: TicketParticipante | null
+    }
 
-    const pool: TicketParticipante[] = (participantes ?? [])
+    const participantes = await leerTodasLasFilas<FilaParticipante>({
+        etiqueta: 'los participantes guardados de la ejecución',
+        clave: 'ticket_id',
+        lote: (cursor, limite) => {
+            const base = encadenable(
+                admin
+                    .from('sorteo_participantes')
+                    .select('ticket_id, ticket:tickets(id, numero, cliente_id)'),
+            ).eq('ejecucion_id', ejecucionId)
+            return comoLote<FilaParticipante>(
+                (cursor ? base.gt('ticket_id', cursor) : base)
+                    .order('ticket_id')
+                    .limit(limite),
+            )
+        },
+        contar: () => comoConteo(
+            encadenable(
+                admin
+                    .from('sorteo_participantes')
+                    .select('ticket_id', { count: 'exact', head: true }),
+            ).eq('ejecucion_id', ejecucionId),
+        ),
+    })
+
+    const pool: TicketParticipante[] = participantes
         .map(p => p.ticket as unknown as TicketParticipante)
         .filter(Boolean)
 
+    // `sorteo_participantes` conserva la fila aunque el boleto desaparezca?
+    // No: `ticket_id` es ON DELETE CASCADE hacia `tickets`, y `tickets` lo es
+    // hacia `clientes`. Borrar un cliente arrastra en cascada las filas de
+    // auditoría del sorteo. Aun así se cuenta el hueco por si algún join
+    // devolviera `null`, para no confundirlo con "los ganadores no coinciden".
+    const participantesSinBoleto = participantes.length - pool.length
+
+    // Sin paginar a propósito: `cantidad_ganadores` está acotada a 100 por
+    // EjecutarSorteoSchema y por `uq_ganador_posicion`, así que este `select`
+    // no puede acercarse al tope de 1000 filas de PostgREST.
     const { data: guardados } = await admin
         .from('sorteo_ganadores')
         .select('ticket_id, posicion, ticket:tickets(numero_formateado)')
@@ -499,11 +637,32 @@ export async function verificarEjecucion(
 
     const poolIntacto = calcularPoolHash(pool.map(t => t.id)) === ejecucion.pool_hash
 
+    // Cuatro ramas, no tres. Antes cualquier `!coincide` caía en "revisa esta
+    // ejecución" —una acusación de manipulación— aunque `poolIntacto` fuese
+    // false y la explicación real fuese que faltan filas. Y faltar pueden:
+    // `sorteo_participantes.ticket_id` y `sorteo_ganadores.ticket_id` son
+    // ON DELETE CASCADE hacia `tickets`, y `tickets.cliente_id` lo es hacia
+    // `clientes`, así que borrar un cliente destruye parte de la auditoría del
+    // sorteo. Cuando eso pasa, el recálculo parte de menos participantes de
+    // los que hubo y por fuerza da otros ganadores: la pantalla que existe
+    // para desmentir una acusación de fraude la estaría formulando ella misma.
+    // Falta información, no cuadra la información — no es lo mismo y el
+    // mensaje tiene que decir cuál de las dos es.
+    const faltanParticipantes =
+        !poolIntacto || pool.length !== ejecucion.pool_count || participantesSinBoleto > 0
+
     let mensaje: string
     if (coincide && poolIntacto) {
         mensaje = 'Verificado. Al repetir el sorteo con la misma semilla salen exactamente los mismos ganadores.'
     } else if (coincide && !poolIntacto) {
         mensaje = 'Los ganadores coinciden, pero la lista de participantes guardada ya no cuadra con la huella original. Es probable que algún boleto se haya eliminado de la base de datos.'
+    } else if (faltanParticipantes) {
+        mensaje =
+            `No se puede verificar esta ejecución: la lista de participantes guardada ya no cuadra con la huella original. ` +
+            `Se registraron ${ejecucion.pool_count} boletos participantes y hoy quedan ${pool.length}. ` +
+            `Al faltar participantes, el recálculo parte de un pool distinto y necesariamente da otros ganadores, ` +
+            `así que esto NO indica que el sorteo se manipulara: indica que se borraron filas de la base de datos ` +
+            `(borrar un cliente arrastra en cascada sus boletos y con ellos la auditoría del sorteo).`
     } else {
         mensaje = 'Los ganadores NO coinciden con lo que produce el algoritmo a partir de la semilla guardada. Revisa esta ejecución.'
     }
@@ -514,6 +673,7 @@ export async function verificarEjecucion(
         semilla: ejecucion.semilla,
         poolCount: ejecucion.pool_count,
         poolIntacto,
+        faltanParticipantes,
         mensaje,
         ganadoresEsperados: esperados,
         ganadoresGuardados: almacenados,
@@ -537,13 +697,19 @@ export async function marcarPremioEntregado(
     // filas se comporta igual que uno exitoso (Postgres no lo considera un
     // error), el interruptor de la interfaz se quedaría marcado y el premio
     // constaría como entregado sin estarlo.
+    // `notas` solo se escribe si el llamante la pasa. Con `notas: notas?.trim()
+    // || null` fijo, el único llamante de hoy (ganadores-panel.tsx, que invoca
+    // sin notas) ponía la columna a NULL en cada pulsación del interruptor: el
+    // día que exista un campo de notas, alternar "entregado" las borraría.
+    const cambios: Record<string, unknown> = {
+        entregado,
+        entregado_at: entregado ? new Date().toISOString() : null,
+    }
+    if (notas !== undefined) cambios.notas = notas.trim() || null
+
     const { data: actualizado, error } = await supabase
         .from('sorteo_ganadores')
-        .update({
-            entregado,
-            entregado_at: entregado ? new Date().toISOString() : null,
-            notas: notas?.trim() || null,
-        })
+        .update(cambios)
         .eq('id', ganadorId)
         .select('id')
 

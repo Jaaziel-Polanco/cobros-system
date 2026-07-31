@@ -63,7 +63,16 @@ export default async function TicketsPage({
                 tickets={tickets}
                 sorteos={sorteos ?? []}
                 puedeAnular={permisos.generar_ticket_manual}
-                puedeAsignarSorteo={permisos.realizar_sorteo}
+                // `ver_sorteos` además de `realizar_sorteo`, y no por celo: el
+                // desplegable de destino se llena con el `select` de `sorteos`
+                // de arriba, que va por el cliente de sesión y depende de la
+                // policy "sorteos: lectura con permiso" → `ver_sorteos`. Con
+                // solo `realizar_sorteo` (combinación que /usuarios permite:
+                // son casillas independientes) el agente veía las casillas y
+                // la barra "Asignar N boletos", marcaba boletos, y el
+                // desplegable decía "No hay sorteos abiertos". Mismo criterio
+                // que exigirPermisoSorteo() en lib/actions/sorteos.ts.
+                puedeAsignarSorteo={permisos.realizar_sorteo && permisos.ver_sorteos}
                 filtrosIniciales={filtros}
             />
         </div>
