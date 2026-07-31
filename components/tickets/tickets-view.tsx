@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState, useTransition } from 'react'
+import { useMemo, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { Search, Download, Send, Ban, Gift, Loader2 } from 'lucide-react'
@@ -73,18 +73,15 @@ export function TicketsView({ tickets, sorteos, puedeAnular, puedeAsignarSorteo,
 
     // Al cambiar de listado (filtros, recarga tras asignar) se descartan las
     // selecciones que ya no están en pantalla: nunca se envía un id que el
-    // usuario no está viendo marcado.
-    useEffect(() => {
-        setSeleccionados(prev => {
-            const visibles = new Set(asignables.map(t => t.id))
-            const siguiente = prev.filter(id => visibles.has(id))
-            return siguiente.length === prev.length ? prev : siguiente
-        })
-    }, [asignables])
-
-    useEffect(() => {
-        if (!modoAsignacion) setSeleccionados([])
-    }, [modoAsignacion])
+    // usuario no está viendo marcado. Es un filtro sobre lo marcado, no un
+    // estado aparte, así que se deriva en el render: guardarlo en `useState`
+    // desde un efecto solo añadiría un repintado y una ventana en la que lo
+    // enviado y lo visible no coinciden.
+    const seleccionVisible = useMemo(() => {
+        if (!modoAsignacion) return []
+        const visibles = new Set(asignables.map(t => t.id))
+        return seleccionados.filter(id => visibles.has(id))
+    }, [modoAsignacion, asignables, seleccionados])
 
     const alternarSeleccion = (id: string) => {
         setSeleccionados(prev =>
@@ -92,11 +89,11 @@ export function TicketsView({ tickets, sorteos, puedeAnular, puedeAsignarSorteo,
         )
     }
 
-    const todosMarcados = asignables.length > 0 && seleccionados.length === asignables.length
+    const todosMarcados = asignables.length > 0 && seleccionVisible.length === asignables.length
 
     const asignar = () => {
-        if (!sorteoDestino || seleccionados.length === 0) return
-        const idsEnviados = seleccionados
+        if (!sorteoDestino || seleccionVisible.length === 0) return
+        const idsEnviados = seleccionVisible
         startTransition(async () => {
             try {
                 const r = await asignarTicketsASorteo(idsEnviados, sorteoDestino)
@@ -187,6 +184,10 @@ export function TicketsView({ tickets, sorteos, puedeAnular, puedeAsignarSorteo,
 
     const handleSoloHuerfanosChange = (v: boolean) => {
         setSoloHuerfanos(v)
+        // Salir (o entrar) del modo de asignación descarta lo marcado: es una
+        // consecuencia directa de este clic, así que se hace aquí y no en un
+        // efecto que reaccione al cambio.
+        setSeleccionados([])
         actualizarFiltros({ soloHuerfanos: v })
     }
 
@@ -309,9 +310,9 @@ export function TicketsView({ tickets, sorteos, puedeAnular, puedeAsignarSorteo,
                 <div className="flex flex-col gap-3 rounded-xl border border-[#007EC6]/20 bg-[#007EC6]/5 p-4 sm:flex-row sm:items-center">
                     <Gift className="h-5 w-5 shrink-0 text-[#007EC6]" />
                     <p className="flex-1 text-sm text-slate-300">
-                        {seleccionados.length === 0
+                        {seleccionVisible.length === 0
                             ? 'Marca los boletos sin sorteo que quieras asignar.'
-                            : `${seleccionados.length} ${seleccionados.length === 1 ? 'boleto seleccionado' : 'boletos seleccionados'}`}
+                            : `${seleccionVisible.length} ${seleccionVisible.length === 1 ? 'boleto seleccionado' : 'boletos seleccionados'}`}
                     </p>
                     <Select value={sorteoDestino} onValueChange={setSorteoDestino}>
                         <SelectTrigger className="w-full bg-slate-800 border-white/10 text-white sm:w-56">
@@ -329,13 +330,13 @@ export function TicketsView({ tickets, sorteos, puedeAnular, puedeAsignarSorteo,
                     </Select>
                     <Button
                         onClick={asignar}
-                        disabled={pendiente || seleccionados.length === 0 || !sorteoDestino}
+                        disabled={pendiente || seleccionVisible.length === 0 || !sorteoDestino}
                         className="gap-2 text-white disabled:opacity-40"
                         style={{ background: 'linear-gradient(135deg, #007EC6, #0096E8)' }}
                     >
                         {pendiente
                             ? <><Loader2 className="h-4 w-4 animate-spin" />Asignando...</>
-                            : <>Asignar {seleccionados.length} {seleccionados.length === 1 ? 'boleto' : 'boletos'}</>}
+                            : <>Asignar {seleccionVisible.length} {seleccionVisible.length === 1 ? 'boleto' : 'boletos'}</>}
                     </Button>
                 </div>
             )}
@@ -391,7 +392,7 @@ export function TicketsView({ tickets, sorteos, puedeAnular, puedeAsignarSorteo,
                                                     type="checkbox"
                                                     aria-label={`Seleccionar ${t.numero_formateado}`}
                                                     className="h-4 w-4 accent-[#007EC6] disabled:opacity-30"
-                                                    checked={seleccionados.includes(t.id)}
+                                                    checked={seleccionVisible.includes(t.id)}
                                                     disabled={t.estado !== 'valido'}
                                                     onChange={() => alternarSeleccion(t.id)}
                                                 />

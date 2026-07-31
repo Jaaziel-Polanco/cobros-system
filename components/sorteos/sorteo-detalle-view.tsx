@@ -41,6 +41,10 @@ export function SorteoDetalleView({
 }: SorteoDetalleViewProps) {
     const [editar, setEditar] = useState(false)
     const [ejecutar, setEjecutar] = useState(false)
+    /** Se incrementa en cada apertura del diálogo de ejecución: le sirve de
+     *  `key` al formulario para que vuelva a montarse con los valores por
+     *  defecto del sorteo. */
+    const [sesionEjecutar, setSesionEjecutar] = useState(0)
     const [confirmarCierre, setConfirmarCierre] = useState(false)
     const [pendiente, startTransition] = useTransition()
 
@@ -137,7 +141,7 @@ export function SorteoDetalleView({
                             )}
                             <Button
                                 size="sm"
-                                onClick={() => setEjecutar(true)}
+                                onClick={() => { setSesionEjecutar(n => n + 1); setEjecutar(true) }}
                                 disabled={pendiente || cerrado}
                                 title={cerrado ? 'Un sorteo cerrado no admite nuevas ejecuciones' : undefined}
                                 className="gap-2 text-white disabled:opacity-40"
@@ -220,6 +224,7 @@ export function SorteoDetalleView({
             <EjecutarSorteoDialog
                 abierto={ejecutar}
                 onCerrar={() => setEjecutar(false)}
+                sesion={sesionEjecutar}
                 sorteo={sorteo}
                 hayEjecucionPrevia={Boolean(ejecucionVigente)}
             />
