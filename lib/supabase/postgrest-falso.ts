@@ -18,6 +18,22 @@
  * `rpc()`. Aquella suite no se toca: reescribirla para compartir este
  * módulo cambiaría pruebas que hoy están en verde y que son la red del
  * módulo de sorteos.
+ *
+ * ── LOS RPC TAMBIÉN SE RECORTAN ───────────────────────────────
+ *
+ * `rpc()` devolvía antes el resultado del manejador tal cual, como si una
+ * función fuera inmune al tope. No lo es: PostgREST expone una función que
+ * devuelve `SETOF`/`TABLE` como una relación más, y le aplica el mismo
+ * `max-rows` **sin error y sin cabecera**. Comprobado contra producción
+ * (2026-07-31): `ultimos_envios_por_deuda` con 1102 deudas devuelve 1000
+ * filas con `error: null` cuando el total real es 1088.
+ *
+ * Y como es una relación, admite también `.eq()`, `.order()`, `.gt()`,
+ * `.limit()` y `count: 'exact'`, todo resuelto en la base **antes** del
+ * recorte. Eso es lo que hace paginable un RPC, y por eso el doble tiene que
+ * reproducir las dos mitades: el recorte y las herramientas para detectarlo.
+ * Un manejador que devuelva un array pasa por `ConsultaFalsa`; uno que
+ * devuelva cualquier otra cosa (un escalar, `null`) se entrega tal cual.
  */
 
 export const MAX_ROWS = 1000
@@ -120,6 +136,29 @@ class InsercionFalsa {
     }
 }
 
+/**
+ * Una consulta que sólo sabe fallar, pero que se deja encadenar igual. Hace
+ * falta para que un RPC con error se comporte como los demás builders: el
+ * código de producción encadena `.eq().order().limit()` antes de esperar.
+ */
+class ConsultaFallida {
+    constructor(private readonly error: { message: string }) { }
+    eq() { return this }
+    neq() { return this }
+    gt() { return this }
+    gte() { return this }
+    lte() { return this }
+    is() { return this }
+    in() { return this }
+    order() { return this }
+    limit() { return this }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    then(alCumplir: any, alFallar?: any) {
+        return Promise.resolve({ data: null, error: this.error, count: null })
+            .then(alCumplir, alFallar)
+    }
+}
+
 export interface OpcionesBaseFalsa {
     maxRows?: number
     /** Respuestas de `rpc(nombre, args)`, por nombre. */
@@ -156,10 +195,29 @@ export function crearBaseFalsa(
                 },
             }
         },
-        async rpc(nombre: string, args?: unknown) {
+        rpc(
+            nombre: string,
+            args?: unknown,
+            opciones?: { count?: string; head?: boolean },
+        ) {
             const fn = opcionesBase.rpc?.[nombre]
-            if (!fn) return { data: null, error: null }
-            return fn(args)
+            const resultado = fn ? fn(args) : { data: null, error: null }
+
+            if (resultado.error) return new ConsultaFallida(resultado.error)
+
+            // Sólo un conjunto de filas es una relación para PostgREST. Un
+            // escalar o un `void` (p. ej. `actualizar_dias_atraso`) se
+            // devuelve tal cual, esperable con un simple `await`.
+            if (!Array.isArray(resultado.data)) {
+                return Promise.resolve(resultado)
+            }
+
+            return new ConsultaFalsa(
+                resultado.data as Fila[],
+                opciones?.head === true,
+                Boolean(opciones?.count),
+                maxRows,
+            )
         },
     }
 }

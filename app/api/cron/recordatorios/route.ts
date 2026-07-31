@@ -14,6 +14,7 @@ import {
     type ConsultaEncadenable,
 } from '@/lib/supabase/paginacion'
 import { leerUltimoPagoPorDeuda } from '@/lib/supabase/ultimo-pago'
+import { leerUltimoEnvioPorDeuda } from '@/lib/supabase/ultimo-envio'
 
 const BATCH_SIZE = 25
 const WEBHOOK_TIMEOUT_MS = 15_000
@@ -131,29 +132,22 @@ export async function GET(req: NextRequest) {
         // ANTES: .limit(deudaIds.length * 5) era un límite GLOBAL, no por grupo, así que
         // las deudas chatty acaparaban el cupo y el último envío de otras quedaba fuera
         // → ultimoEnvioCliente=null → el cron reenviaba 2-3 veces al día.
+        //
+        // FILTRADO Y PAGINADO EN `leerUltimoEnvioPorDeuda`. El RPC arregló
+        // aquel límite global, pero el resultado de un RPC **también** está
+        // sujeto al `max-rows` de 1000 de PostgREST: 200, `error: null` y
+        // menos filas. Este mapa es lo único que impide reenviar, así que un
+        // recorte aquí significa un segundo WhatsApp a quien ya recibió el
+        // aviso — el defecto exacto que el RPC vino a corregir.
+        // Ver lib/supabase/ultimo-envio.ts.
+        //
+        // El filtro por 'cliente' pasa a resolverse en la base: antes se
+        // traían también los envíos a referencias para descartarlos aquí,
+        // gastando cupo con filas que nadie usa.
         const deudaIds = deudas.map(d => d.id)
-        const ultimoEnvioClientePorDeuda = new Map<string, string>()
-
-        if (deudaIds.length > 0) {
-            type UltimoEnvioRow = {
-                deuda_id: string
-                tipo_destino: string
-                ultimo_sent_at: string
-            }
-            const { data, error: ultimosErr } = await supabase.rpc(
-                'ultimos_envios_por_deuda',
-                { p_deuda_ids: deudaIds }
-            )
-            if (ultimosErr) {
-                console.error('[CRON] Error obteniendo últimos envíos:', ultimosErr.message)
-            }
-            const ultimos = (data ?? []) as UltimoEnvioRow[]
-            for (const r of ultimos) {
-                if (r.tipo_destino === 'cliente') {
-                    ultimoEnvioClientePorDeuda.set(r.deuda_id, r.ultimo_sent_at)
-                }
-            }
-        }
+        const ultimoEnvioClientePorDeuda = await leerUltimoEnvioPorDeuda(
+            supabase, deudaIds, 'cliente',
+        )
 
         // 2b. Cargar pagos recientes para determinar si ya pagó este período
         //
