@@ -578,6 +578,155 @@ export async function enviarTicketWhatsApp(
     return { ok: true, estado: resultado.status }
 }
 
+// ─── ASIGNACIÓN DE HUÉRFANOS A UN SORTEO ───────────────────────
+
+export interface AsignacionTicketsResultado {
+    asignados: number
+    /**
+     * Ids de boletos que NO se asignaron porque su `numero` ya está en uso
+     * dentro del sorteo destino (índice único uq_tickets_numero_sorteo,
+     * (sorteo_id, numero), sin filtrar por estado del boleto). Los boletos
+     * huérfanos numeran desde 1 con su propia secuencia
+     * (tickets_numero_huerfano_seq) y los de un sorteo numeran desde 1 con
+     * el correlativo del sorteo, así que un choque de números pequeños es
+     * el caso común, no la excepción. Deliberadamente NO se renumeran para
+     * resolverlo: numero_formateado puede haberse impreso en papel o
+     * enviado por WhatsApp, y cambiarlo invalidaría un boleto que el
+     * cliente ya tiene en la mano. Quedan huérfanos; hay que resolver el
+     * choque a mano (por ejemplo, anulando uno de los dos boletos en
+     * conflicto).
+     */
+    rechazadosPorNumero: string[]
+}
+
+/**
+ * Asigna boletos sin sorteo a un sorteo concreto.
+ *
+ * No se renumeran: conservan su `numero_formateado` original, porque puede
+ * haberse impreso o enviado ya al cliente.
+ */
+export async function asignarTicketsASorteo(
+    ticketIds: string[],
+    sorteoId: string,
+): Promise<AsignacionTicketsResultado> {
+    const { supabase, user, permisos } = await perfilActual()
+
+    if (!permisos.realizar_sorteo) {
+        throw new Error('No tienes permiso para asignar boletos a un sorteo')
+    }
+    if (ticketIds.length === 0) return { asignados: 0, rechazadosPorNumero: [] }
+
+    const { data: sorteo } = await supabase
+        .from('sorteos').select('id, nombre, estado').eq('id', sorteoId).single()
+
+    if (!sorteo) throw new Error('Sorteo no encontrado')
+    if (sorteo.estado === 'cerrado') {
+        throw new Error('El sorteo está cerrado')
+    }
+
+    // Candidatos reales: huérfanos válidos entre los ids pedidos.
+    const { data: candidatos, error: candidatosError } = await supabase
+        .from('tickets')
+        .select('id, numero')
+        .in('id', ticketIds)
+        .is('sorteo_id', null)
+        .eq('estado', 'valido')
+
+    if (candidatosError) throw new Error(candidatosError.message)
+    if (!candidatos?.length) return { asignados: 0, rechazadosPorNumero: [] }
+
+    // Números ya ocupados en el sorteo destino (cualquier estado: el índice
+    // único no libera el número de un boleto anulado).
+    const { data: existentes, error: existentesError } = await supabase
+        .from('tickets')
+        .select('numero')
+        .eq('sorteo_id', sorteoId)
+
+    if (existentesError) throw new Error(existentesError.message)
+
+    const numerosUsados = new Set((existentes ?? []).map(t => t.numero))
+    const asignables = candidatos.filter(t => !numerosUsados.has(t.numero))
+    const rechazadosPorNumero = candidatos
+        .filter(t => numerosUsados.has(t.numero))
+        .map(t => t.id)
+
+    if (asignables.length === 0) {
+        return { asignados: 0, rechazadosPorNumero }
+    }
+
+    const { data, error } = await supabase
+        .from('tickets')
+        .update({ sorteo_id: sorteoId })
+        .in('id', asignables.map(t => t.id))
+        .is('sorteo_id', null)          // solo huérfanos, nunca robar de otro sorteo
+        .eq('estado', 'valido')
+        .select('id')
+
+    // Carrera improbable: entre la lectura de `existentes` y este UPDATE,
+    // otro proceso asignó al mismo sorteo un boleto con el mismo número que
+    // uno de nuestros `asignables`. Un UPDATE por lotes que choca con el
+    // índice único revierte el lote ENTERO (no solo la fila en conflicto),
+    // así que se reintenta fila por fila para no perder las asignaciones que
+    // sí eran válidas.
+    if (error?.code === '23505') {
+        const asignadosIndividual: { id: string }[] = []
+        const rechazadosCarrera: string[] = []
+        for (const t of asignables) {
+            const { data: fila, error: filaError } = await supabase
+                .from('tickets')
+                .update({ sorteo_id: sorteoId })
+                .eq('id', t.id)
+                .is('sorteo_id', null)
+                .eq('estado', 'valido')
+                .select('id')
+                .maybeSingle()
+            if (filaError || !fila) {
+                rechazadosCarrera.push(t.id)
+            } else {
+                asignadosIndividual.push(fila)
+            }
+        }
+        if (asignadosIndividual.length > 0) {
+            await supabase.from('ticket_eventos').insert(
+                asignadosIndividual.map(t => ({
+                    ticket_id: t.id,
+                    tipo: 'asignado_sorteo' as const,
+                    estado: 'ok' as const,
+                    detalle: `Asignado al sorteo "${sorteo.nombre}"`,
+                    usuario_id: user.id,
+                })),
+            )
+        }
+        revalidatePath('/tickets')
+        revalidatePath(`/sorteos/${sorteoId}`)
+        return {
+            asignados: asignadosIndividual.length,
+            rechazadosPorNumero: [...rechazadosPorNumero, ...rechazadosCarrera],
+        }
+    }
+
+    if (error) throw new Error(error.message)
+
+    const asignados = data?.length ?? 0
+
+    if (asignados > 0) {
+        await supabase.from('ticket_eventos').insert(
+            data!.map(t => ({
+                ticket_id: t.id,
+                tipo: 'asignado_sorteo' as const,
+                estado: 'ok' as const,
+                detalle: `Asignado al sorteo "${sorteo.nombre}"`,
+                usuario_id: user.id,
+            })),
+        )
+    }
+
+    revalidatePath('/tickets')
+    revalidatePath(`/sorteos/${sorteoId}`)
+
+    return { asignados, rechazadosPorNumero }
+}
+
 /**
  * Envía un boleto ficticio al webhook de boletos para averiguar
  * empíricamente qué acepta el proveedor de WhatsApp. No persiste nada.
