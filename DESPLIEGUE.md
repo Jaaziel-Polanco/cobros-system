@@ -230,6 +230,69 @@ ipconfig
 
 ---
 
+## Impresión en sucursales
+
+### Arquitectura
+
+```
+[Servidor Local]                          [PC de sucursal]
+  ├── /api/print/hello   ◄──────────────  print-agent (Node.js)
+  ├── /api/print/poll    ◄──────────────  ├── consulta trabajos pendientes
+  ├── /api/print/ack     ◄──────────────  └── imprime y confirma
+  └── purgarPayloadsImpresion (cron)
+```
+
+La web **encola** trabajos de impresión (tirilla en ESC/POS, base64) en la
+tabla `print_jobs`. El agente instalado en cada PC de sucursal los consulta
+por long-poll (`/api/print/poll`), los manda a la impresora física y
+confirma el resultado (`/api/print/ack`). El servidor nunca imprime nada
+directamente: solo encola y reparte.
+
+### Antes de instalar el agente
+
+Crea las sucursales y estaciones desde `/estaciones` en el sistema. Cada
+estación genera un **token** que se muestra una sola vez: es lo que
+identifica y autentica a esa PC frente al servidor (viaja en la cabecera
+`Authorization: Bearer <token>`, nunca en el cuerpo de la petición).
+
+### Instalación del agente
+
+Documentada en detalle en `print-agent/README.md`: requisitos, tipos de
+conexión de impresora (`red` / `windows`), cómo dejarlo corriendo como
+servicio de Windows con NSSM, y el simulador para probar sin impresora
+física.
+
+`print-agent/` está **excluido de la imagen Docker a propósito**: se
+instala en las PC de sucursal, no en el servidor.
+
+### Purga de payloads impresos
+
+Los trabajos de impresión guardan la tirilla completa en base64. Una vez
+impresa, ese contenido ya no sirve para nada — el boleto salió del papel —
+pero sin purgarlo la tabla crece sin límite. Una tarea programada dentro
+del mismo cron embebido de `server.js` vacía periódicamente el
+`payload_escpos` de los trabajos terminados, conservando la fila (y su
+`preview_texto`) para auditoría.
+
+Variables nuevas (`.env.local`):
+
+```env
+PURGA_SCHEDULE=30 3 * * *   # Horario cron (zona RD) de la purga. Default: 3:30 AM.
+PURGA_DIAS=7                # Días de retención antes de vaciar el payload. Default: 7.
+```
+
+Al arrancar el servidor verás en consola:
+
+```
+[PURGA] 🧹 Programada: "30 3 * * *" (retención: 7 días)
+```
+
+La purga solo toca trabajos ya resueltos (`impreso` o `error`) y respeta
+la ventana de retención: los trabajos en vuelo (`pendiente`, `reclamado`)
+nunca se ven afectados.
+
+---
+
 ## Troubleshooting
 
 | Problema                     | Solución                                                            |

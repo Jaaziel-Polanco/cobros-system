@@ -14,6 +14,10 @@
  *   CRON_SCHEDULE       → Expresión cron (default: "0 8,18 * * *")
  *   PORT                → Puerto del servidor (default: 3000)
  *   HOSTNAME            → Hostname (default: 0.0.0.0 para acceso en red)
+ *   PURGA_SCHEDULE      → Expresión cron de la purga de payloads impresos
+ *                         (default: "30 3 * * *")
+ *   PURGA_DIAS          → Días de retención antes de vaciar el payload
+ *                         (default: 7)
  */
 
 const { createServer } = require("http");
@@ -84,6 +88,47 @@ async function dispararRecordatorios() {
   }
 }
 
+const PURGA_SCHEDULE = process.env.PURGA_SCHEDULE ?? "30 3 * * *";
+const PURGA_DIAS = parseInt(process.env.PURGA_DIAS ?? "7", 10);
+
+/**
+ * Vacía el contenido ESC/POS de los trabajos de impresión ya terminados.
+ * Las filas se conservan para auditoría; solo se libera el base64, que es
+ * lo único que ocupa espacio de verdad.
+ */
+async function purgarPayloadsImpresion() {
+  if (isShuttingDown) return;
+
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url || !key) {
+    console.error("[PURGA] ❌ Faltan credenciales de Supabase. Omitida.");
+    return;
+  }
+
+  try {
+    const res = await fetch(`${url}/rest/v1/rpc/purgar_payloads_impresos`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({ p_dias: PURGA_DIAS }),
+    });
+
+    if (!res.ok) {
+      console.error(`[PURGA] ⚠️ Respuesta ${res.status}: ${await res.text()}`);
+      return;
+    }
+
+    console.log(`[PURGA] ✅ ${await res.text()} payloads liberados`);
+  } catch (err) {
+    console.error(`[PURGA] ❌ Error: ${err.message}`);
+  }
+}
+
 function gracefulShutdown(signal) {
   if (isShuttingDown) return;
   isShuttingDown = true;
@@ -148,6 +193,15 @@ app.prepare().then(() => {
     console.log(
       '[CRON] 💡 Para probar ahora: ve a /simulador y usa "Disparar Cron ahora"\n',
     );
+
+    if (cron.validate(PURGA_SCHEDULE)) {
+      cron.schedule(PURGA_SCHEDULE, purgarPayloadsImpresion, {
+        timezone: "America/Santo_Domingo",
+      });
+      console.log(
+        `[PURGA] 🧹 Programada: "${PURGA_SCHEDULE}" (retención: ${PURGA_DIAS} días)`,
+      );
+    }
 
     // Ejecuta una pasada al iniciar para cubrir deudas existentes
     // sin esperar al próximo horario del cron.
