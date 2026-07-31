@@ -1,12 +1,15 @@
 import crypto from 'node:crypto'
 import { createClient } from '@supabase/supabase-js'
+import type { TipoConexionEstacion } from '@/lib/types'
 
 export interface EstacionAutenticada {
     id: string
     sucursal_id: string
     nombre: string
-    impresora_ip: string
+    tipo_conexion: TipoConexionEstacion
+    impresora_ip: string | null
     impresora_port: number
+    impresora_nombre: string | null
     ancho_cols: number
     codepage: string
     sucursal_nombre: string
@@ -38,7 +41,7 @@ export async function autenticarEstacion(
 
     const { data } = await supabase
         .from('estaciones_impresion')
-        .select('id, sucursal_id, nombre, impresora_ip, impresora_port, ancho_cols, codepage, activo, sucursal:sucursales(nombre)')
+        .select('id, sucursal_id, nombre, tipo_conexion, impresora_ip, impresora_port, impresora_nombre, ancho_cols, codepage, activo, sucursal:sucursales(nombre)')
         .eq('token_hash', hash)
         .maybeSingle()
 
@@ -48,8 +51,10 @@ export async function autenticarEstacion(
         id: data.id,
         sucursal_id: data.sucursal_id,
         nombre: data.nombre,
+        tipo_conexion: data.tipo_conexion as TipoConexionEstacion,
         impresora_ip: data.impresora_ip,
         impresora_port: data.impresora_port,
+        impresora_nombre: data.impresora_nombre,
         ancho_cols: data.ancho_cols,
         codepage: data.codepage,
         sucursal_nombre:

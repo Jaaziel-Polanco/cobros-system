@@ -21,7 +21,12 @@ export async function POST(req: Request) {
     return NextResponse.json({
         estacion: estacion.nombre,
         sucursal: estacion.sucursal_nombre,
-        impresora: { ip: estacion.impresora_ip, port: estacion.impresora_port },
+        impresora: {
+            tipo_conexion: estacion.tipo_conexion,
+            ip: estacion.impresora_ip,
+            port: estacion.impresora_port,
+            nombre: estacion.impresora_nombre,
+        },
         ancho_cols: estacion.ancho_cols,
         codepage: estacion.codepage,
     })

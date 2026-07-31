@@ -3,7 +3,7 @@
 import crypto from 'node:crypto'
 import { createClient } from '@/lib/supabase/server'
 import { revalidatePath } from 'next/cache'
-import type { Sucursal, EstacionImpresion } from '@/lib/types'
+import type { Sucursal, EstacionImpresion, TipoConexionEstacion } from '@/lib/types'
 
 /** SHA-256 en hexadecimal. El token plano nunca se guarda. */
 export async function hashToken(token: string): Promise<string> {
@@ -82,7 +82,7 @@ export async function getEstaciones(): Promise<EstacionImpresion[]> {
     const supabase = await createClient()
     const { data, error } = await supabase
         .from('estaciones_impresion')
-        .select('id, sucursal_id, nombre, token_prefijo, impresora_ip, impresora_port, ancho_cols, codepage, activo, ultimo_heartbeat, ultima_ip_agente, version_agente, created_at, updated_at, sucursal:sucursales(id, nombre)')
+        .select('id, sucursal_id, nombre, token_prefijo, tipo_conexion, impresora_ip, impresora_port, impresora_nombre, ancho_cols, codepage, activo, ultimo_heartbeat, ultima_ip_agente, version_agente, created_at, updated_at, sucursal:sucursales(id, nombre)')
         .order('nombre')
 
     if (error) throw new Error(error.message)
@@ -94,23 +94,68 @@ function generarToken(): string {
 }
 
 /**
+ * Valida una IPv4 en notación decimal con punto, comprobando que cada
+ * octeto esté en 0-255. Un regex que solo cuenta dígitos (`\d{1,3}`)
+ * acepta basura como "999.999.999.999"; aquí se valida el rango real.
+ */
+function esIpValida(ip: string): boolean {
+    const partes = ip.trim().split('.')
+    if (partes.length !== 4) return false
+    return partes.every(p => /^\d{1,3}$/.test(p) && Number(p) <= 255)
+}
+
+/**
+ * Valida los datos de conexión según el tipo elegido y devuelve los
+ * campos ya normalizados para guardar. Cada tipo deja en null el dato
+ * que no le corresponde, para que la fila nunca quede ambigua.
+ */
+function validarConexion(input: {
+    tipo_conexion: TipoConexionEstacion
+    impresora_ip?: string
+    impresora_port?: number
+    impresora_nombre?: string
+}): { impresora_ip: string | null; impresora_port: number; impresora_nombre: string | null } {
+    if (input.tipo_conexion === 'red') {
+        const ip = input.impresora_ip?.trim() ?? ''
+        if (!esIpValida(ip)) {
+            throw new Error('La IP de la impresora no es válida')
+        }
+        return {
+            impresora_ip: ip,
+            impresora_port: input.impresora_port ?? 9100,
+            impresora_nombre: null,
+        }
+    }
+
+    const nombre = input.impresora_nombre?.trim() ?? ''
+    if (!nombre) {
+        throw new Error('El nombre de la impresora es obligatorio para conexión Windows')
+    }
+    return {
+        impresora_ip: null,
+        impresora_port: input.impresora_port ?? 9100,
+        impresora_nombre: nombre,
+    }
+}
+
+/**
  * Crea una estación y devuelve su token EN CLARO una sola vez.
  * En la base de datos solo queda el hash: si se pierde, hay que regenerarlo.
  */
 export async function crearEstacion(input: {
     sucursal_id: string
     nombre: string
-    impresora_ip: string
+    tipo_conexion: TipoConexionEstacion
+    impresora_ip?: string
     impresora_port?: number
+    impresora_nombre?: string
     ancho_cols?: number
     codepage?: string
 }): Promise<{ estacion: EstacionImpresion; tokenPlano: string }> {
     const supabase = await exigirAdmin()
 
     if (!input.nombre?.trim()) throw new Error('El nombre es obligatorio')
-    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(input.impresora_ip)) {
-        throw new Error('La IP de la impresora no es válida')
-    }
+    const conexion = validarConexion(input)
 
     const tokenPlano = generarToken()
 
@@ -121,8 +166,10 @@ export async function crearEstacion(input: {
             nombre: input.nombre.trim(),
             token_hash: await hashToken(tokenPlano),
             token_prefijo: tokenPlano.slice(0, 8),
-            impresora_ip: input.impresora_ip,
-            impresora_port: input.impresora_port ?? 9100,
+            tipo_conexion: input.tipo_conexion,
+            impresora_ip: conexion.impresora_ip,
+            impresora_port: conexion.impresora_port,
+            impresora_nombre: conexion.impresora_nombre,
             ancho_cols: input.ancho_cols ?? 48,
             codepage: input.codepage ?? 'cp850',
         })
@@ -144,8 +191,10 @@ export async function actualizarEstacion(
     id: string,
     input: {
         nombre: string
-        impresora_ip: string
-        impresora_port: number
+        tipo_conexion: TipoConexionEstacion
+        impresora_ip?: string
+        impresora_port?: number
+        impresora_nombre?: string
         ancho_cols: number
         codepage: string
         activo: boolean
@@ -153,12 +202,16 @@ export async function actualizarEstacion(
 ): Promise<void> {
     const supabase = await exigirAdmin()
 
+    const conexion = validarConexion(input)
+
     const { error } = await supabase
         .from('estaciones_impresion')
         .update({
             nombre: input.nombre.trim(),
-            impresora_ip: input.impresora_ip,
-            impresora_port: input.impresora_port,
+            tipo_conexion: input.tipo_conexion,
+            impresora_ip: conexion.impresora_ip,
+            impresora_port: conexion.impresora_port,
+            impresora_nombre: conexion.impresora_nombre,
             ancho_cols: input.ancho_cols,
             codepage: input.codepage,
             activo: input.activo,

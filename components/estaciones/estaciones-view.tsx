@@ -7,7 +7,7 @@ import {
     crearEstacion, actualizarEstacion, regenerarTokenEstacion,
 } from '@/lib/actions/estaciones'
 import { imprimirPaginaDePrueba } from '@/lib/actions/impresion'
-import type { Sucursal, EstacionImpresion } from '@/lib/types'
+import type { Sucursal, EstacionImpresion, TipoConexionEstacion } from '@/lib/types'
 import { formatearFechaHoraRD } from '@/lib/utils/fecha-rd'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -111,8 +111,10 @@ function EstacionFormModal({
     const [isPending, startTransition] = useTransition()
     const [sucursalId, setSucursalId] = useState('')
     const [nombre, setNombre] = useState('')
+    const [tipoConexion, setTipoConexion] = useState<TipoConexionEstacion>('red')
     const [ip, setIp] = useState('')
     const [port, setPort] = useState(9100)
+    const [impresoraNombre, setImpresoraNombre] = useState('')
     const [anchoCols, setAnchoCols] = useState(48)
     const [codepage, setCodepage] = useState('cp850')
     const [activo, setActivo] = useState(true)
@@ -121,8 +123,10 @@ function EstacionFormModal({
         if (open) {
             setSucursalId(estacion?.sucursal_id ?? '')
             setNombre(estacion?.nombre ?? '')
+            setTipoConexion(estacion?.tipo_conexion ?? 'red')
             setIp(estacion?.impresora_ip ?? '')
             setPort(estacion?.impresora_port ?? 9100)
+            setImpresoraNombre(estacion?.impresora_nombre ?? '')
             setAnchoCols(estacion?.ancho_cols ?? 48)
             setCodepage(estacion?.codepage ?? 'cp850')
             setActivo(estacion?.activo ?? true)
@@ -133,9 +137,13 @@ function EstacionFormModal({
         e.preventDefault()
         startTransition(async () => {
             try {
+                const datosConexion = tipoConexion === 'red'
+                    ? { impresora_ip: ip, impresora_port: port }
+                    : { impresora_nombre: impresoraNombre }
+
                 if (estacion) {
                     await actualizarEstacion(estacion.id, {
-                        nombre, impresora_ip: ip, impresora_port: port,
+                        nombre, tipo_conexion: tipoConexion, ...datosConexion,
                         ancho_cols: anchoCols, codepage, activo,
                     })
                     toast.success('Estación actualizada')
@@ -143,8 +151,8 @@ function EstacionFormModal({
                 } else {
                     if (!sucursalId) { toast.error('Selecciona una sucursal'); return }
                     const { tokenPlano } = await crearEstacion({
-                        sucursal_id: sucursalId, nombre, impresora_ip: ip,
-                        impresora_port: port, ancho_cols: anchoCols, codepage,
+                        sucursal_id: sucursalId, nombre, tipo_conexion: tipoConexion,
+                        ...datosConexion, ancho_cols: anchoCols, codepage,
                     })
                     onClose()
                     onCreated(tokenPlano)
@@ -176,16 +184,40 @@ function EstacionFormModal({
                         <Label className="text-slate-300">Nombre *</Label>
                         <Input className="bg-slate-800 border-white/10 text-white" value={nombre} onChange={e => setNombre(e.target.value)} required />
                     </div>
-                    <div className="grid grid-cols-2 gap-4">
-                        <div className="space-y-1.5">
-                            <Label className="text-slate-300">IP de la impresora *</Label>
-                            <Input placeholder="192.168.1.50" className="bg-slate-800 border-white/10 text-white font-mono" value={ip} onChange={e => setIp(e.target.value)} required />
-                        </div>
-                        <div className="space-y-1.5">
-                            <Label className="text-slate-300">Puerto</Label>
-                            <Input type="number" className="bg-slate-800 border-white/10 text-white" value={port} onChange={e => setPort(Number(e.target.value))} />
-                        </div>
+                    <div className="space-y-1.5">
+                        <Label className="text-slate-300">Tipo de conexión *</Label>
+                        <Select value={tipoConexion} onValueChange={v => setTipoConexion(v as TipoConexionEstacion)}>
+                            <SelectTrigger className="bg-slate-800 border-white/10 text-white">
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent className="bg-slate-800 border-white/10 text-white">
+                                <SelectItem value="red">Impresora de red (IP y puerto)</SelectItem>
+                                <SelectItem value="windows">Impresora instalada en Windows</SelectItem>
+                            </SelectContent>
+                        </Select>
                     </div>
+
+                    {tipoConexion === 'red' ? (
+                        <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-1.5">
+                                <Label className="text-slate-300">IP de la impresora *</Label>
+                                <Input placeholder="192.168.1.50" className="bg-slate-800 border-white/10 text-white font-mono" value={ip} onChange={e => setIp(e.target.value)} required />
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label className="text-slate-300">Puerto</Label>
+                                <Input type="number" className="bg-slate-800 border-white/10 text-white" value={port} onChange={e => setPort(Number(e.target.value))} />
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="space-y-1.5">
+                            <Label className="text-slate-300">Nombre de la impresora en Windows *</Label>
+                            <Input placeholder="POS-80 Series" className="bg-slate-800 border-white/10 text-white font-mono" value={impresoraNombre} onChange={e => setImpresoraNombre(e.target.value)} required />
+                            <p className="text-xs text-slate-500">
+                                Se encuentra en «Impresoras y escáneres» de Windows, en la PC de la sucursal.
+                                Debe escribirse exactamente igual, con los mismos espacios y mayúsculas.
+                            </p>
+                        </div>
+                    )}
                     <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1.5">
                             <Label className="text-slate-300">Ancho (columnas)</Label>
@@ -387,7 +419,9 @@ export function EstacionesView({ sucursales, estaciones }: EstacionesViewProps) 
                                     </div>
 
                                     <div className="text-sm text-slate-300 font-mono">
-                                        {est.impresora_ip}:{est.impresora_port}
+                                        {est.tipo_conexion === 'windows'
+                                            ? `Windows: ${est.impresora_nombre}`
+                                            : `Red: ${est.impresora_ip}:${est.impresora_port}`}
                                     </div>
                                     <div className="text-xs text-slate-500">
                                         {est.ancho_cols} columnas · {est.codepage}

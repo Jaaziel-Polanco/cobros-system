@@ -8,6 +8,7 @@ export type EstadoSorteo = 'borrador' | 'activo' | 'cerrado'
 export type ModoAdjunto = 'base64' | 'url' | 'ambos' | 'ninguno'
 export type EstadoPrintJob =
     | 'pendiente' | 'reclamado' | 'impreso' | 'error' | 'cancelado'
+export type TipoConexionEstacion = 'red' | 'windows'
 export type TipoTicketEvento =
     | 'emitido' | 'enviado_wa' | 'impreso' | 'anulado' | 'asignado_sorteo'
 
@@ -64,8 +65,10 @@ export interface EstacionImpresion {
     sucursal_id: string
     nombre: string
     token_prefijo: string
-    impresora_ip: string
+    tipo_conexion: TipoConexionEstacion
+    impresora_ip: string | null
     impresora_port: number
+    impresora_nombre: string | null
     ancho_cols: number
     codepage: string
     activo: boolean
