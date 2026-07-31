@@ -108,14 +108,15 @@ describe('ClienteApi.poll', () => {
 })
 
 describe('ClienteApi.ack', () => {
-    it('envía ok true en el cuerpo', async () => {
+    it('envía ok true en el cuerpo, sin el token', async () => {
         const espia = vi.fn(() => respuesta({ estado: 'impreso' }))
         globalThis.fetch = espia as never
 
         await new ClienteApi('http://x', 'tok', 25_000).ack('j1', true)
 
         const cuerpo = JSON.parse((espia.mock.calls[0][1] as RequestInit).body as string)
-        expect(cuerpo).toMatchObject({ token: 'tok', jobId: 'j1', ok: true })
+        expect(cuerpo).toMatchObject({ jobId: 'j1', ok: true })
+        expect(cuerpo).not.toHaveProperty('token')
     })
 
     it('envía el mensaje de error cuando la impresión falló', async () => {
@@ -126,6 +127,22 @@ describe('ClienteApi.ack', () => {
 
         const cuerpo = JSON.parse((espia.mock.calls[0][1] as RequestInit).body as string)
         expect(cuerpo).toMatchObject({ ok: false, error: 'impresora apagada' })
+    })
+})
+
+describe('ClienteApi — token en la cabecera, no en el cuerpo', () => {
+    it('manda el token como "Authorization: Bearer <token>" y nunca en el cuerpo JSON', async () => {
+        const espia = vi.fn(() => respuesta({ estado: 'impreso' }))
+        globalThis.fetch = espia as never
+
+        await new ClienteApi('http://x', 'secreto-de-estacion', 25_000).ack('j1', true)
+
+        const [, init] = espia.mock.calls[0] as [string, RequestInit]
+        const cabeceras = init.headers as Record<string, string>
+        expect(cabeceras.Authorization).toBe('Bearer secreto-de-estacion')
+
+        const cuerpoCrudo = init.body as string
+        expect(cuerpoCrudo).not.toContain('secreto-de-estacion')
     })
 })
 

@@ -25,6 +25,23 @@ export function clienteAdmin() {
 }
 
 /**
+ * Extrae el token de la cabecera `Authorization: Bearer <token>`.
+ *
+ * El token vive en la cabecera y no en el cuerpo a propósito: un cuerpo que
+ * se refleja en una respuesta de error (o en un log que lo registre) nunca
+ * puede exponer algo que nunca estuvo ahí. Sanear el cuerpo por texto era
+ * una carrera imposible de ganar contra codificaciones (base64, etc.); sacar
+ * el token del cuerpo la elimina de raíz.
+ */
+export function extraerToken(req: Request): string | null {
+    const cabecera = req.headers.get('authorization')
+    if (!cabecera?.startsWith('Bearer ')) return null
+
+    const token = cabecera.slice('Bearer '.length).trim()
+    return token.length > 0 ? token : null
+}
+
+/**
  * Resuelve el token de estación que envía el agente local.
  * Devuelve null si no corresponde a ninguna estación activa.
  *

@@ -57,8 +57,15 @@ export class ClienteApi {
         try {
             const resp = await fetch(`${this.apiUrl}${ruta}`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ token: this.token, version: VERSION_AGENTE, ...cuerpo }),
+                headers: {
+                    'Content-Type': 'application/json',
+                    // El token va en la cabecera, nunca en el cuerpo: así un eco del
+                    // cuerpo en una respuesta de error (o un log que lo registre) no
+                    // puede contenerlo, ni siquiera codificado (base64, etc.), que es
+                    // justo lo que el saneado de `sanear()` no alcanza a cubrir.
+                    Authorization: `Bearer ${this.token}`,
+                },
+                body: JSON.stringify({ version: VERSION_AGENTE, ...cuerpo }),
                 signal: controlador.signal,
             })
 

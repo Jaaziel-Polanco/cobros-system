@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server'
-import { autenticarEstacion, registrarLatido } from '@/lib/api-print/auth'
+import { autenticarEstacion, extraerToken, registrarLatido } from '@/lib/api-print/auth'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 export async function POST(req: Request) {
     const cuerpo = await req.json().catch(() => ({}))
-    const estacion = await autenticarEstacion(cuerpo?.token)
+    const estacion = await autenticarEstacion(extraerToken(req))
 
     if (!estacion) {
         return NextResponse.json({ error: 'Token inválido' }, { status: 401 })
