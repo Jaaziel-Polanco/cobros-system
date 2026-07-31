@@ -2,6 +2,7 @@
 
 import crypto from 'node:crypto'
 import { createClient } from '@/lib/supabase/server'
+import { createClient as createAdminClient } from '@supabase/supabase-js'
 import { revalidatePath } from 'next/cache'
 import { getPermisos } from '@/lib/utils/permisos'
 import { rangoRDaUTC } from '@/lib/utils/fecha-rd'
@@ -29,49 +30,163 @@ async function contexto() {
     return { supabase, user, permisos: getPermisos(perfil) }
 }
 
+/**
+ * Exige poder gestionar sorteos.
+ *
+ * Comprueba TAMBIÉN `ver_sorteos`, y no por celo: todas las policies de
+ * SELECT de `sorteos`/`sorteo_*` (20260729_02) dependen de `ver_sorteos`, y
+ * Postgres exige que una fila sea visible por SELECT para poder
+ * actualizarla. Un perfil con `realizar_sorteo` pero sin `ver_sorteos` (una
+ * combinación que /usuarios permite marcar, porque los dos permisos son
+ * casillas independientes) no obtenía un "no tienes permiso": obtenía
+ * "Sorteo no encontrado" al crear, o un UPDATE de 0 filas sin ningún error
+ * al marcar un premio como entregado. Mejor un mensaje que diga la verdad.
+ */
 async function exigirPermisoSorteo() {
     const ctx = await contexto()
     if (!ctx.permisos.realizar_sorteo) {
         throw new Error('No tienes permiso para gestionar sorteos')
     }
+    if (!ctx.permisos.ver_sorteos) {
+        throw new Error(
+            'Para gestionar sorteos hace falta también el permiso de ver sorteos',
+        )
+    }
     return ctx
 }
+
+async function exigirVerSorteos() {
+    const ctx = await contexto()
+    if (!ctx.permisos.ver_sorteos) {
+        throw new Error('No tienes permiso para ver sorteos')
+    }
+    return ctx
+}
+
+/**
+ * Cliente service_role, sin sesión, para las lecturas TRANSVERSALES del
+ * módulo de sorteos. Mismo patrón (y mismas cautelas) que el
+ * `crearClienteAdmin()` de lib/actions/tickets.ts.
+ *
+ * POR QUÉ HACE FALTA (verificado contra producción impersonando a un agente
+ * real con `SET LOCAL ROLE authenticated` + `request.jwt.claims`, sobre un
+ * sorteo ZZTEST con 4 boletos de 2 clientes de agentes DISTINTOS):
+ *
+ * un sorteo es transversal a toda la cartera, pero las policies de RLS de
+ * `tickets`, `clientes` y `profiles` son POR AGENTE. Leyendo con el cliente
+ * de sesión, un agente con `ver_sorteos`/`realizar_sorteo` obtenía:
+ *
+ *   - el pool del sorteo: 2 de 4 boletos    → el barajado se hacía sobre
+ *     MEDIA cartera y los ganadores salían solo de sus propios clientes,
+ *     sin ningún error visible. Es el fallo más grave del módulo: un sorteo
+ *     silenciosamente amañado por construcción.
+ *   - los participantes al re-verificar: 2 de 4 → "Verificar ejecución"
+ *     habría dicho que los ganadores NO coinciden en un sorteo perfectamente
+ *     limpio: una acusación falsa de fraude.
+ *   - el cliente del ganador: 1 de 2, y su boleto: 1 de 2 → nombre, teléfono
+ *     y número de boleto en blanco para los ganadores de otros agentes (y la
+ *     advertencia de "boleto anulado" nunca se mostraría para ellos).
+ *   - quién ejecutó el sorteo: 0 de 1 → el panel de auditoría oculta al
+ *     auditor (`profiles` solo deja a un agente leer su propia fila).
+ *   - el contador de boletos válidos del sorteo: 2 de 4.
+ *
+ * Ninguna de estas lecturas puede resolverse ampliando RLS sin abrir la
+ * cartera entera (es exactamente el callejón sin salida que documentan las
+ * migraciones 20260730_14/15/16). Como el permiso ya se comprueba de forma
+ * explícita en cada función de este archivo ANTES de usar este cliente, la
+ * puerta de control sigue existiendo: solo cambia de sitio, de la policy a
+ * la Server Action. Lo que se lee aquí es lo mínimo del caso de uso: ids,
+ * números, nombre y teléfono del ganador. Nunca `snapshot` (que lleva la
+ * cédula) ni `token_publico`.
+ */
+function crearClienteAdmin() {
+    return createAdminClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.SUPABASE_SERVICE_ROLE_KEY!,
+        { auth: { autoRefreshToken: false, persistSession: false } },
+    )
+}
+
+type ClienteAdmin = ReturnType<typeof crearClienteAdmin>
 
 // ─── CRUD ─────────────────────────────────────────────────────
 
 export async function getSorteos(): Promise<Sorteo[]> {
-    const supabase = await createClient()
+    // La tabla `sorteos` sí es visible entera con `ver_sorteos` (policy
+    // "sorteos: lectura con permiso"), así que aquí basta el cliente de
+    // sesión. La comprobación explícita duplica a propósito lo que ya hace
+    // la policy: la página no debe ser la única puerta.
+    const { supabase } = await exigirVerSorteos()
     const { data, error } = await supabase
         .from('sorteos').select('*').order('created_at', { ascending: false })
     if (error) throw new Error(error.message)
     return (data ?? []) as Sorteo[]
 }
 
+export interface EjecucionConEjecutor {
+    id: string
+    sorteo_id: string
+    rango_desde: string
+    rango_hasta: string
+    cantidad_ganadores: number
+    semilla: string
+    algoritmo: string
+    pool_count: number
+    pool_hash: string
+    vigente: boolean
+    ejecutado_por: string | null
+    ejecutado_at: string
+    notas: string | null
+    ejecutor: { id: string; full_name: string } | null
+}
+
+export interface GanadorDetalle {
+    id: string
+    ejecucion_id: string
+    ticket_id: string
+    cliente_id: string
+    posicion: number
+    premio: string | null
+    entregado: boolean
+    entregado_at: string | null
+    notas: string | null
+    snapshot: Record<string, unknown>
+    ticket: { id: string; numero_formateado: string; estado: string } | null
+    cliente: { id: string; nombre: string; apellido: string; telefono: string | null } | null
+}
+
 export async function getSorteoDetalle(id: string) {
-    const supabase = await createClient()
+    const { supabase } = await exigirVerSorteos()
 
     const { data: sorteo, error } = await supabase
         .from('sorteos').select('*').eq('id', id).single()
     if (error || !sorteo) throw new Error('Sorteo no encontrado')
 
-    const { data: ejecuciones } = await supabase
+    // A partir de aquí, cliente admin: ver el comentario de crearClienteAdmin().
+    // Con el cliente de sesión, un agente veía el ejecutor en blanco, la mitad
+    // de los ganadores sin nombre ni número de boleto, y un contador de
+    // boletos que solo cuenta los de sus propios clientes.
+    const admin = crearClienteAdmin()
+
+    const { data: ejecuciones } = await admin
         .from('sorteo_ejecuciones')
         .select('*, ejecutor:profiles(id, full_name)')
         .eq('sorteo_id', id)
         .order('ejecutado_at', { ascending: false })
 
-    const vigente = ejecuciones?.find(e => e.vigente) ?? null
+    const lista = (ejecuciones ?? []) as unknown as EjecucionConEjecutor[]
+    const vigente = lista.find(e => e.vigente) ?? null
 
     const ganadores = vigente
-        ? (await supabase
+        ? ((await admin
             .from('sorteo_ganadores')
             .select('*, ticket:tickets(id, numero_formateado, estado), cliente:clientes(id, nombre, apellido, telefono)')
             .eq('ejecucion_id', vigente.id)
             .order('posicion')
-          ).data ?? []
+          ).data ?? []) as unknown as GanadorDetalle[]
         : []
 
-    const { count: totalBoletos } = await supabase
+    const { count: totalBoletos } = await admin
         .from('tickets')
         .select('id', { count: 'exact', head: true })
         .eq('sorteo_id', id)
@@ -79,7 +194,7 @@ export async function getSorteoDetalle(id: string) {
 
     return {
         sorteo: sorteo as Sorteo,
-        ejecuciones: ejecuciones ?? [],
+        ejecuciones: lista,
         ejecucionVigente: vigente,
         ganadores,
         totalBoletos: totalBoletos ?? 0,
@@ -160,16 +275,25 @@ export async function cerrarSorteo(id: string): Promise<void> {
 
 // ─── POOL Y EJECUCIÓN ─────────────────────────────────────────
 
-/** Lee los boletos que participarían, en orden canónico por número. */
+/**
+ * Lee los boletos que participarían, en orden canónico por número.
+ *
+ * SIEMPRE con el cliente admin: el pool de un sorteo es toda la cartera, y
+ * el cliente de sesión solo ve los boletos de los clientes del agente que
+ * llama (verificado: 2 de 4 en la prueba con dos agentes). Un pool
+ * amputado no produce un error, produce un sorteo amañado en silencio.
+ * Solo salen de aquí `id`, `numero` y `cliente_id`, y ninguno de los tres
+ * llega nunca al navegador.
+ */
 async function leerPool(
-    supabase: Awaited<ReturnType<typeof createClient>>,
+    admin: ClienteAdmin,
     sorteoId: string,
     desde: string,
     hasta: string,
 ): Promise<TicketParticipante[]> {
     const { desdeISO, hastaISO } = rangoRDaUTC(desde, hasta)
 
-    const { data, error } = await supabase
+    const { data, error } = await admin
         .from('tickets')
         .select('id, numero, cliente_id')
         .eq('sorteo_id', sorteoId)
@@ -182,12 +306,19 @@ async function leerPool(
     return (data ?? []) as TicketParticipante[]
 }
 
-/** Cuántos boletos y cuántos clientes distintos participarían. */
+/**
+ * Cuántos boletos y cuántos clientes distintos participarían.
+ *
+ * Gateada con `realizar_sorteo`, no con `ver_sorteos`: la vista previa solo
+ * existe dentro del diálogo de ejecución, que a su vez solo se muestra con
+ * `realizar_sorteo`. Antes no comprobaba ningún permiso y se apoyaba en RLS,
+ * que además la truncaba (ver leerPool).
+ */
 export async function previsualizarPool(
     sorteoId: string, desde: string, hasta: string,
 ): Promise<{ boletos: number; clientes: number }> {
-    const supabase = await createClient()
-    const pool = await leerPool(supabase, sorteoId, desde, hasta)
+    await exigirPermisoSorteo()
+    const pool = await leerPool(crearClienteAdmin(), sorteoId, desde, hasta)
 
     return {
         boletos: pool.length,
@@ -235,7 +366,8 @@ export async function ejecutarSorteo(
     }
 
     const pool = await leerPool(
-        supabase, validado.sorteo_id, validado.rango_desde, validado.rango_hasta,
+        crearClienteAdmin(), validado.sorteo_id,
+        validado.rango_desde, validado.rango_hasta,
     )
 
     if (pool.length === 0) {
@@ -311,7 +443,7 @@ export interface ResultadoVerificacion {
 export async function verificarEjecucion(
     ejecucionId: string,
 ): Promise<ResultadoVerificacion> {
-    const { supabase } = await contexto()
+    const { supabase } = await exigirVerSorteos()
 
     const { data: ejecucion, error } = await supabase
         .from('sorteo_ejecuciones').select('*').eq('id', ejecucionId).single()
@@ -331,7 +463,15 @@ export async function verificarEjecucion(
         }
     }
 
-    const { data: participantes } = await supabase
+    // Cliente admin, obligatoriamente: el recálculo tiene que partir del pool
+    // COMPLETO. Con el cliente de sesión, un agente solo recuperaba los
+    // participantes de sus propios clientes (2 de 4 en la prueba real) y la
+    // verificación de un sorteo intachable devolvía "los ganadores NO
+    // coinciden" — el peor falso positivo posible en una función cuyo único
+    // trabajo es demostrar que no hubo trampa.
+    const admin = crearClienteAdmin()
+
+    const { data: participantes } = await admin
         .from('sorteo_participantes')
         .select('ticket_id, ticket:tickets(id, numero, cliente_id)')
         .eq('ejecucion_id', ejecucionId)
@@ -340,7 +480,7 @@ export async function verificarEjecucion(
         .map(p => p.ticket as unknown as TicketParticipante)
         .filter(Boolean)
 
-    const { data: guardados } = await supabase
+    const { data: guardados } = await admin
         .from('sorteo_ganadores')
         .select('ticket_id, posicion, ticket:tickets(numero_formateado)')
         .eq('ejecucion_id', ejecucionId)
@@ -393,7 +533,11 @@ export async function marcarPremioEntregado(
         .eq('id', ganadorId)
         .single()
 
-    const { error } = await supabase
+    // `.select('id')` no es decorativo: sin él, un UPDATE que RLS deje en 0
+    // filas se comporta igual que uno exitoso (Postgres no lo considera un
+    // error), el interruptor de la interfaz se quedaría marcado y el premio
+    // constaría como entregado sin estarlo.
+    const { data: actualizado, error } = await supabase
         .from('sorteo_ganadores')
         .update({
             entregado,
@@ -401,8 +545,12 @@ export async function marcarPremioEntregado(
             notas: notas?.trim() || null,
         })
         .eq('id', ganadorId)
+        .select('id')
 
     if (error) throw new Error(error.message)
+    if (!actualizado || actualizado.length === 0) {
+        throw new Error('No se pudo actualizar la entrega del premio')
+    }
 
     const sorteoId = (ganador?.ejecucion as unknown as { sorteo_id: string } | null)?.sorteo_id
     if (sorteoId) revalidatePath(`/sorteos/${sorteoId}`)

@@ -102,6 +102,23 @@ export function formatearFechaHoraRD(iso: string): string {
     }).format(new Date(iso))
 }
 
+/**
+ * Formatea una fecha de calendario ('YYYY-MM-DD', columnas DATE como
+ * `sorteos.fecha_inicio` o `sorteo_ejecuciones.rango_desde`) como
+ * 'DD/MM/YYYY'.
+ *
+ * Deliberadamente sin pasar por `Date`: una columna DATE no es un instante,
+ * y `new Date('2026-07-25')` se interpreta como medianoche UTC, que en hora
+ * RD (UTC-4) es el 24/07 a las 20:00. Formatearla como si fuera un instante
+ * la mueve un día hacia atrás — en un sorteo, eso es mostrar un rango de
+ * fechas que no es el que se usó para elegir a los ganadores.
+ */
+export function formatearFechaCalendario(fecha: string): string {
+    const [anio, mes, dia] = fecha.split('-')
+    if (!anio || !mes || !dia) return fecha
+    return `${dia}/${mes}/${anio}`
+}
+
 /** Formatea un instante ISO como 'DD/MM/YYYY' en hora RD. */
 export function formatearFechaRD(iso: string): string {
     return new Intl.DateTimeFormat('es-DO', {

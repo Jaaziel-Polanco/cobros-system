@@ -1,22 +1,28 @@
 'use client'
 
-import { useMemo, useState, useTransition } from 'react'
+import { useEffect, useMemo, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
-import { Search, Download, Send, Ban } from 'lucide-react'
+import { Search, Download, Send, Ban, Gift, Loader2 } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
-import { enviarTicketWhatsApp, anularTicket, type FiltrosTickets } from '@/lib/actions/tickets'
+import {
+    enviarTicketWhatsApp, anularTicket, asignarTicketsASorteo, type FiltrosTickets,
+} from '@/lib/actions/tickets'
 import { formatearFechaHoraRD } from '@/lib/utils/fecha-rd'
 import { ESTADO_TICKET_COLORS, ESTADO_TICKET_LABELS, ORIGEN_TICKET_LABELS } from '@/lib/types'
-import type { TicketConRelaciones } from '@/lib/types'
+import type { EstadoSorteo, TicketConRelaciones } from '@/lib/types'
 
 interface TicketsViewProps {
     tickets: TicketConRelaciones[]
-    sorteos: { id: string; nombre: string }[]
+    /** `estado` es opcional por compatibilidad, pero la página lo envía: sin
+     *  él, el desplegable de asignación ofrecería sorteos cerrados, que el
+     *  RPC `asignar_tickets_a_sorteo` rechaza siempre. */
+    sorteos: { id: string; nombre: string; estado?: EstadoSorteo }[]
     puedeAnular: boolean
     puedeAsignarSorteo: boolean
     /** Filtros ya aplicados en el servidor (leídos de la URL). Sirven para
@@ -26,9 +32,6 @@ interface TicketsViewProps {
 }
 
 export function TicketsView({ tickets, sorteos, puedeAnular, puedeAsignarSorteo, filtrosIniciales }: TicketsViewProps) {
-    // `puedeAsignarSorteo` no se usa todavía: el Plan 3 lo consume para la
-    // asignación masiva de boletos huérfanos a un sorteo.
-    void puedeAsignarSorteo
     const router = useRouter()
     const [busqueda, setBusqueda] = useState('')
     const [estadoFiltro, setEstadoFiltro] = useState(filtrosIniciales.estado ?? '')
@@ -37,7 +40,17 @@ export function TicketsView({ tickets, sorteos, puedeAnular, puedeAsignarSorteo,
     const [soloHuerfanos, setSoloHuerfanos] = useState(filtrosIniciales.soloHuerfanos ?? false)
     const [desde, setDesde] = useState(filtrosIniciales.desde ?? '')
     const [hasta, setHasta] = useState(filtrosIniciales.hasta ?? '')
+    const [seleccionados, setSeleccionados] = useState<string[]>([])
+    const [sorteoDestino, setSorteoDestino] = useState('')
     const [pendiente, startTransition] = useTransition()
+
+    // El modo de asignación solo existe con el filtro de huérfanos activo: es
+    // el único listado en el que todos los boletos son asignables.
+    const modoAsignacion = soloHuerfanos && puedeAsignarSorteo
+    const sorteosAsignables = useMemo(
+        () => sorteos.filter(s => s.estado !== 'cerrado'),
+        [sorteos],
+    )
 
     // Estado, origen, sorteo, huérfanos y rango de fechas ya se filtraron en
     // el servidor (getTickets recibe estos mismos valores vía searchParams,
@@ -49,6 +62,76 @@ export function TicketsView({ tickets, sorteos, puedeAnular, puedeAsignarSorteo,
         if (!term) return tickets
         return tickets.filter(t => t.numero_formateado.toLowerCase().includes(term))
     }, [tickets, busqueda])
+
+    // Solo los boletos válidos son asignables: el RPC descarta los anulados
+    // en silencio, así que ofrecer su casilla sería ofrecer una acción que no
+    // hace nada.
+    const asignables = useMemo(
+        () => filtrados.filter(t => t.estado === 'valido'),
+        [filtrados],
+    )
+
+    // Al cambiar de listado (filtros, recarga tras asignar) se descartan las
+    // selecciones que ya no están en pantalla: nunca se envía un id que el
+    // usuario no está viendo marcado.
+    useEffect(() => {
+        setSeleccionados(prev => {
+            const visibles = new Set(asignables.map(t => t.id))
+            const siguiente = prev.filter(id => visibles.has(id))
+            return siguiente.length === prev.length ? prev : siguiente
+        })
+    }, [asignables])
+
+    useEffect(() => {
+        if (!modoAsignacion) setSeleccionados([])
+    }, [modoAsignacion])
+
+    const alternarSeleccion = (id: string) => {
+        setSeleccionados(prev =>
+            prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id],
+        )
+    }
+
+    const todosMarcados = asignables.length > 0 && seleccionados.length === asignables.length
+
+    const asignar = () => {
+        if (!sorteoDestino || seleccionados.length === 0) return
+        const idsEnviados = seleccionados
+        startTransition(async () => {
+            try {
+                const r = await asignarTicketsASorteo(idsEnviados, sorteoDestino)
+
+                // El número que se muestra es el REAL, no el que se marcó: la
+                // acción solo asigna los que siguen huérfanos y válidos.
+                toast.success(
+                    `${r.asignados} ${r.asignados === 1 ? 'boleto asignado' : 'boletos asignados'}`,
+                )
+
+                if (r.rechazadosPorNumero.length > 0) {
+                    // El RPC devuelve ids, nunca datos de boleto; los números
+                    // se resuelven aquí, contra la lista que ya está en
+                    // pantalla, sin pedirle más al servidor.
+                    const numeros = r.rechazadosPorNumero
+                        .map(id => tickets.find(t => t.id === id)?.numero_formateado ?? id)
+                    toast.warning(
+                        `${numeros.length} sin asignar por número repetido en ese sorteo: ${numeros.join(', ')}`,
+                        { duration: 12000 },
+                    )
+                }
+
+                const noTocados = idsEnviados.length - r.asignados - r.rechazadosPorNumero.length
+                if (noTocados > 0) {
+                    toast.info(
+                        `${noTocados} ya no estaban disponibles (otro usuario los asignó o se anularon).`,
+                    )
+                }
+
+                setSeleccionados([])
+            } catch (e: unknown) {
+                toast.error(e instanceof Error ? e.message : 'Error')
+            }
+        })
+    }
 
     /** Recalcula la URL con los filtros vigentes y navega, lo que hace que
      *  el Server Component vuelva a llamar getTickets() con el WHERE
@@ -221,12 +304,62 @@ export function TicketsView({ tickets, sorteos, puedeAnular, puedeAsignarSorteo,
                 </div>
             </div>
 
+            {/* Barra de asignación masiva de huérfanos */}
+            {modoAsignacion && (
+                <div className="flex flex-col gap-3 rounded-xl border border-[#007EC6]/20 bg-[#007EC6]/5 p-4 sm:flex-row sm:items-center">
+                    <Gift className="h-5 w-5 shrink-0 text-[#007EC6]" />
+                    <p className="flex-1 text-sm text-slate-300">
+                        {seleccionados.length === 0
+                            ? 'Marca los boletos sin sorteo que quieras asignar.'
+                            : `${seleccionados.length} ${seleccionados.length === 1 ? 'boleto seleccionado' : 'boletos seleccionados'}`}
+                    </p>
+                    <Select value={sorteoDestino} onValueChange={setSorteoDestino}>
+                        <SelectTrigger className="w-full bg-slate-800 border-white/10 text-white sm:w-56">
+                            <SelectValue placeholder="Sorteo de destino" />
+                        </SelectTrigger>
+                        <SelectContent className="bg-slate-800 border-white/10 text-white">
+                            {sorteosAsignables.length === 0 ? (
+                                <SelectItem value="__vacio" disabled>
+                                    No hay sorteos abiertos
+                                </SelectItem>
+                            ) : sorteosAsignables.map(s => (
+                                <SelectItem key={s.id} value={s.id}>{s.nombre}</SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                    <Button
+                        onClick={asignar}
+                        disabled={pendiente || seleccionados.length === 0 || !sorteoDestino}
+                        className="gap-2 text-white disabled:opacity-40"
+                        style={{ background: 'linear-gradient(135deg, #007EC6, #0096E8)' }}
+                    >
+                        {pendiente
+                            ? <><Loader2 className="h-4 w-4 animate-spin" />Asignando...</>
+                            : <>Asignar {seleccionados.length} {seleccionados.length === 1 ? 'boleto' : 'boletos'}</>}
+                    </Button>
+                </div>
+            )}
+
             {/* Tabla */}
             <div className="bg-slate-800/50 border border-white/5 rounded-2xl overflow-hidden">
                 <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                         <thead>
                             <tr className="border-b border-white/5 text-slate-500 text-xs">
+                                {modoAsignacion && (
+                                    <th className="p-4 w-10">
+                                        <input
+                                            type="checkbox"
+                                            aria-label="Seleccionar todos"
+                                            className="h-4 w-4 accent-[#007EC6]"
+                                            checked={todosMarcados}
+                                            disabled={asignables.length === 0}
+                                            onChange={e => setSeleccionados(
+                                                e.target.checked ? asignables.map(t => t.id) : [],
+                                            )}
+                                        />
+                                    </th>
+                                )}
                                 <th className="text-left p-4 font-medium">Número</th>
                                 <th className="text-left p-4 font-medium">Cliente</th>
                                 <th className="text-left p-4 font-medium">Sorteo</th>
@@ -239,7 +372,7 @@ export function TicketsView({ tickets, sorteos, puedeAnular, puedeAsignarSorteo,
                         <tbody className="divide-y divide-white/5">
                             {filtrados.length === 0 ? (
                                 <tr>
-                                    <td colSpan={7} className="text-center p-12 text-slate-500">
+                                    <td colSpan={modoAsignacion ? 8 : 7} className="text-center p-12 text-slate-500">
                                         No se encontraron boletos
                                     </td>
                                 </tr>
@@ -252,6 +385,18 @@ export function TicketsView({ tickets, sorteos, puedeAnular, puedeAsignarSorteo,
 
                                 return (
                                     <tr key={t.id} className="text-slate-300 hover:bg-white/3 transition-colors">
+                                        {modoAsignacion && (
+                                            <td className="p-4">
+                                                <input
+                                                    type="checkbox"
+                                                    aria-label={`Seleccionar ${t.numero_formateado}`}
+                                                    className="h-4 w-4 accent-[#007EC6] disabled:opacity-30"
+                                                    checked={seleccionados.includes(t.id)}
+                                                    disabled={t.estado !== 'valido'}
+                                                    onChange={() => alternarSeleccion(t.id)}
+                                                />
+                                            </td>
+                                        )}
                                         <td className="p-4 font-mono text-white">{t.numero_formateado}</td>
                                         <td className="p-4">{nombreCliente}</td>
                                         <td className="p-4 text-xs">

@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { rangoRDaUTC, formatearFechaHoraRD, formatearFechaRD, TZ_RD } from './fecha-rd'
+import {
+    rangoRDaUTC, formatearFechaHoraRD, formatearFechaRD,
+    formatearFechaCalendario, TZ_RD,
+} from './fecha-rd'
 
 describe('TZ_RD', () => {
     it('apunta a la zona horaria de República Dominicana', () => {
@@ -54,5 +57,19 @@ describe('formatearFechaHoraRD', () => {
 describe('formatearFechaRD', () => {
     it('formatea solo la fecha en hora RD', () => {
         expect(formatearFechaRD('2026-07-30T01:30:00.000Z')).toBe('29/07/2026')
+    })
+})
+
+describe('formatearFechaCalendario', () => {
+    it('no desplaza la fecha un día hacia atrás', () => {
+        // El fallo que evita: new Date('2026-07-25') es medianoche UTC, que
+        // en hora RD es el 24/07 a las 20:00.
+        expect(formatearFechaCalendario('2026-07-25')).toBe('25/07/2026')
+        expect(formatearFechaCalendario('2026-01-01')).toBe('01/01/2026')
+    })
+
+    it('devuelve la entrada tal cual si no tiene la forma esperada', () => {
+        expect(formatearFechaCalendario('')).toBe('')
+        expect(formatearFechaCalendario('2026-07')).toBe('2026-07')
     })
 })

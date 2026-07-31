@@ -47,8 +47,10 @@ export default async function TicketsPage({
     }
 
     const tickets = await getTickets(filtros)
+    // `estado` viaja para que la asignación masiva de huérfanos no ofrezca
+    // sorteos cerrados: el RPC asignar_tickets_a_sorteo los rechaza siempre.
     const { data: sorteos } = await supabase
-        .from('sorteos').select('id, nombre').order('created_at', { ascending: false })
+        .from('sorteos').select('id, nombre, estado').order('created_at', { ascending: false })
 
     return (
         <div className="space-y-6 p-4 sm:p-6">
