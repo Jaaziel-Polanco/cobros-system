@@ -8,12 +8,8 @@ import {
 } from '@/lib/actions/estaciones'
 import { imprimirPaginaDePrueba } from '@/lib/actions/impresion'
 import { CODEPAGES } from '@/lib/escpos/codificacion'
+import { ANCHO_COLS_MIN, ANCHO_COLS_MAX } from '@/lib/validations/estaciones'
 import type { Sucursal, EstacionImpresion, TipoConexionEstacion } from '@/lib/types'
-
-/** Debe coincidir con ANCHO_COLS_MIN/MAX en lib/actions/estaciones.ts y
- *  con el CHECK ck_estacion_ancho_cols de la base. */
-const ANCHO_COLS_MIN = 22
-const ANCHO_COLS_MAX = 80
 import { formatearFechaHoraRD } from '@/lib/utils/fecha-rd'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'

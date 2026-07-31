@@ -3,47 +3,8 @@
 import crypto from 'node:crypto'
 import { createClient } from '@/lib/supabase/server'
 import { revalidatePath } from 'next/cache'
-import { CODEPAGES } from '@/lib/escpos/codificacion'
+import { validarAnchoYCodepage } from '@/lib/validations/estaciones'
 import type { Sucursal, EstacionImpresion, TipoConexionEstacion } from '@/lib/types'
-
-/**
- * Ancho mínimo que garantiza que el número del boleto nunca se trunca:
- * el formato más largo posible ("{prefijo hasta 12}-SN-{6 dígitos}") mide
- * hasta 22 caracteres — ver escribirNumeroBoleto() en
- * lib/escpos/tirilla-ticket.ts, que degrada el tamaño de letra hasta
- * TAMANO.NORMAL (1 columna física por carácter) pero nunca por debajo.
- * Máximo generoso: nada real pasa de 80 columnas.
- */
-const ANCHO_COLS_MIN = 22
-const ANCHO_COLS_MAX = 80
-
-/**
- * Valida ancho_cols y codepage.
- *
- * Reproducido en producción: ancho_cols = 0 hace que columnasEfectivas()
- * (lib/escpos/comandos.ts) divida por columnas 0 y CUALQUIER impresión de
- * esa sucursal revienta con "Invalid array length", no solo la de prueba.
- * ancho_cols = 4 no revienta, pero recorta el número del boleto, rompiendo
- * la invariante de la Tarea 2 de que el número nunca se trunca. Un
- * codepage mal escrito cae en silencio a cp850 (selectorCodepage() tiene
- * un `?? POR_DEFECTO`), así que un typo no avisa a nadie.
- *
- * Esto cubre la interfaz; el CHECK de la base
- * (20260730_08_estaciones_ancho_codepage.sql) cubre cualquier otra vía de
- * escritura.
- */
-function validarAnchoYCodepage(ancho_cols: number, codepage: string): void {
-    if (!Number.isInteger(ancho_cols) || ancho_cols < ANCHO_COLS_MIN || ancho_cols > ANCHO_COLS_MAX) {
-        throw new Error(
-            `El ancho debe ser un número entero entre ${ANCHO_COLS_MIN} y ${ANCHO_COLS_MAX} columnas`,
-        )
-    }
-    if (!(codepage in CODEPAGES)) {
-        throw new Error(
-            `Codepage no soportado: "${codepage}". Los válidos son ${Object.keys(CODEPAGES).join(', ')}`,
-        )
-    }
-}
 
 /** SHA-256 en hexadecimal. El token plano nunca se guarda. */
 export async function hashToken(token: string): Promise<string> {
