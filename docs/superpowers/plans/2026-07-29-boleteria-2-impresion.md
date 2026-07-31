@@ -2915,6 +2915,88 @@ git commit -m "feat: purga programada de los payloads de impresión"
 
 ---
 
+## Tarea 8: Ver y controlar la cola de impresión
+
+> **Añadida después de la revisión de rama del Plan 2.** No estaba en el plan original y
+> no es una corrección: es funcionalidad que faltaba y que la revisión hizo evidente.
+
+**El problema.** Hoy no existe ni una sola lectura de `print_jobs` en la interfaz. Eso
+significa que:
+
+- Un trabajo que terminó en `error` es **invisible**. La cajera vio el aviso de éxito al
+  encolar y nadie se entera nunca de que el papel no salió.
+- El estado `cancelado` está declarado en los tipos pero **no lo escribe nadie**: no hay
+  forma de cancelar un trabajo.
+- Como el índice `uq_print_jobs_ticket_en_vuelo` cuenta los trabajos `pendiente` y
+  `reclamado`, un trabajo colgado —de una estación que se desactivó, por ejemplo— **bloquea
+  para siempre** toda reimpresión de ese boleto, y la única salida es editar la base a mano.
+
+Ese último punto es el que convierte esto en algo más que una comodidad.
+
+**Files:**
+- Create: `components/estaciones/cola-impresion.tsx`
+- Modify: `lib/actions/impresion.ts`, `components/estaciones/estaciones-view.tsx`,
+  `app/(dashboard)/estaciones/page.tsx`, `components/tickets/tickets-cliente-panel.tsx`,
+  `app/(dashboard)/clientes/[id]/page.tsx`
+
+**Interfaces:**
+- Consumes: tabla `print_jobs`, `getPermisos`, `formatearFechaHoraRD`
+- Produces:
+  - `getColaImpresion(sucursalId?): Promise<PrintJob[]>` — admin
+  - `cancelarTrabajoImpresion(jobId, motivo): Promise<void>`
+  - `reencolarTrabajoImpresion(jobId): Promise<{ jobId: string }>`
+  - `getEstadoImpresionTickets(ticketIds): Promise<Map<string, EstadoPrintJob>>`
+
+### Lo que hay que construir
+
+**1. La cola en `/estaciones`, para administradores.** Bajo cada estación, los trabajos de
+su sucursal que no estén terminados hace tiempo: estado, boleto al que pertenecen (o la
+marca de página de prueba), cuándo se encoló, cuántos intentos lleva y el mensaje de error
+si lo hay. Ordenados por antigüedad, los problemáticos primero.
+
+Que se pueda ver la `preview_texto` de un trabajo: existe justamente para depurar sin
+descodificar base64, y hoy no la mira nadie.
+
+**2. Cancelar.** Un trabajo `pendiente` o `reclamado` puede cancelarse, con motivo. Escribe
+`cancelado`, que libera el índice único y desbloquea las reimpresiones de ese boleto. Es la
+salida al problema del trabajo colgado.
+
+**3. Reencolar.** Un trabajo en `error` puede volver a la cola. Es lo que querrá hacer quien
+arregle la impresora: reintentar sin tener que emitir otro boleto.
+
+Ojo: reencolar un trabajo cuyo boleto ya tiene otro en vuelo choca con el índice único.
+Trátalo con un mensaje entendible, no con el error crudo de Postgres.
+
+**4. El estado en el perfil del cliente.** Junto a cada boleto, si tiene un trabajo de
+impresión reciente, mostrar en qué estado está. Basta con un indicador discreto: lo que hoy
+falta es que la cajera pueda saber que su impresión falló, sin tener que preguntarle a un
+administrador.
+
+### Permisos
+
+La cola completa de una sucursal es cosa de administradores. El estado del propio boleto,
+de quien pueda ver ese boleto.
+
+**Comprueba la coherencia entre las tres capas** —interfaz, Server Action y policy RLS— para
+cada acción nueva. Es el defecto que más veces ha aparecido en estos dos planes: seis, entre
+ambos. La policy de SELECT de `print_jobs` para no-admin es hoy `solicitado_por = auth.uid()`,
+así que decide conscientemente qué debe poder ver cada rol y hazlo coincidir en las tres.
+
+`cancelar` y `reencolar` escriben en `print_jobs`, tabla que **no tiene hoy ninguna policy de
+UPDATE para no-admin**. Si decides que un agente pueda cancelar sus propios trabajos, hará
+falta la policy; si no, que la interfaz no se lo ofrezca.
+
+### Verificación
+
+- Encolar, cancelar, y comprobar que **el boleto vuelve a poder imprimirse**: es el desbloqueo
+  que motiva la tarea.
+- Provocar un trabajo en `error`, reencolarlo y verificar que vuelve a `pendiente`.
+- Intentar reencolar cuando el boleto ya tiene otro en vuelo: mensaje entendible.
+- Que un trabajo de prueba se distinga en la lista y no aparente pertenecer a un boleto.
+- Que un agente no vea la cola de otra sucursal.
+
+---
+
 ## Verificación final del Plan 2
 
 - [ ] `npm test` en la raíz — todo en verde
