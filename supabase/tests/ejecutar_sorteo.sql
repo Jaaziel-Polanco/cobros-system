@@ -31,14 +31,17 @@ BEGIN
   VALUES ('Sorteo Verificacion', CURRENT_DATE - 10, CURRENT_DATE + 10, 'borrador', 'TSTVER')
   RETURNING id INTO v_sorteo;
 
+  -- ck_ticket_motivo_manual (añadida después de este brief) exige motivo
+  -- no vacío para origen = 'manual'. Boletos de prueba: se les da un motivo
+  -- cualquiera, no relevante para lo que este guion verifica.
   INSERT INTO public.tickets
-    (numero, numero_formateado, sorteo_id, cliente_id, origen, token_publico, snapshot)
-  VALUES (1, 'TSTVER-000001', v_sorteo, v_cliente1, 'manual', 'tok-ver-1', '{}'::jsonb)
+    (numero, numero_formateado, sorteo_id, cliente_id, origen, motivo, token_publico, snapshot)
+  VALUES (1, 'TSTVER-000001', v_sorteo, v_cliente1, 'manual', 'Prueba de verificación', 'tok-ver-1', '{}'::jsonb)
   RETURNING id INTO v_t1;
 
   INSERT INTO public.tickets
-    (numero, numero_formateado, sorteo_id, cliente_id, origen, token_publico, snapshot)
-  VALUES (2, 'TSTVER-000002', v_sorteo, v_cliente2, 'manual', 'tok-ver-2', '{}'::jsonb)
+    (numero, numero_formateado, sorteo_id, cliente_id, origen, motivo, token_publico, snapshot)
+  VALUES (2, 'TSTVER-000002', v_sorteo, v_cliente2, 'manual', 'Prueba de verificación', 'tok-ver-2', '{}'::jsonb)
   RETURNING id INTO v_t2;
 
   -- Caso 1: primera ejecución

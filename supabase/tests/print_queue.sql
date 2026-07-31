@@ -10,6 +10,7 @@ DECLARE
   v_estacion UUID;
   v_cliente  UUID;
   v_ticket   UUID;
+  v_ticket2  UUID;
   v_job1     UUID;
   v_job2     UUID;
   v_conteo   INTEGER;
@@ -26,16 +27,30 @@ BEGIN
   VALUES ('PruebaCola', 'Temporal', '8090000000')
   RETURNING id INTO v_cliente;
 
+  -- ck_ticket_motivo_manual (añadida después de este guion) exige motivo
+  -- no vacío para origen = 'manual'.
   INSERT INTO public.tickets
-    (numero, numero_formateado, cliente_id, origen, token_publico, snapshot)
-  VALUES (1, 'TST-COLA-01', v_cliente, 'manual', 'tok-prueba-cola', '{}'::jsonb)
+    (numero, numero_formateado, cliente_id, origen, motivo, token_publico, snapshot)
+  VALUES (1, 'TST-COLA-01', v_cliente, 'manual', 'Prueba de verificación', 'tok-prueba-cola', '{}'::jsonb)
   RETURNING id INTO v_ticket;
+
+  -- Segundo boleto para v_job2: uq_print_jobs_ticket_en_vuelo (añadida
+  -- después de este guion, en 20260730_05_dedup_print_jobs.sql) impide dos
+  -- trabajos 'pendiente'/'reclamado' simultáneos para el MISMO boleto. El
+  -- guion original ponía job1 y job2 sobre v_ticket a la vez, lo que ahora
+  -- viola ese índice. Ningún caso de este guion depende de que job1 y job2
+  -- compartan boleto -- solo de que compartan sucursal (para reclamar_print_jobs)
+  -- -- así que darle a job2 su propio boleto no cambia lo que se verifica.
+  INSERT INTO public.tickets
+    (numero, numero_formateado, cliente_id, origen, motivo, token_publico, snapshot)
+  VALUES (2, 'TST-COLA-02', v_cliente, 'manual', 'Prueba de verificación', 'tok-prueba-cola-2', '{}'::jsonb)
+  RETURNING id INTO v_ticket2;
 
   INSERT INTO public.print_jobs (ticket_id, sucursal_id, payload_escpos)
   VALUES (v_ticket, v_sucursal, 'AAAA') RETURNING id INTO v_job1;
 
   INSERT INTO public.print_jobs (ticket_id, sucursal_id, payload_escpos)
-  VALUES (v_ticket, v_sucursal, 'BBBB') RETURNING id INTO v_job2;
+  VALUES (v_ticket2, v_sucursal, 'BBBB') RETURNING id INTO v_job2;
 
   -- Caso 1: reclamar devuelve los pendientes y los marca
   SELECT count(*) INTO v_conteo
