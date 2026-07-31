@@ -248,6 +248,35 @@ salir marcado `***** COPIA *****`.
 Cuando toque instalarlo de verdad en la tienda, lo único que cambia es
 dejar `MODO_SIMULADOR=` vacío y apuntar `API_URL` al servidor real.
 
+### Simular la cola de Windows con una impresora falsa
+
+Lo anterior salta el spooler. Esto no: crea una impresora de Windows de
+verdad cuyo puerto TCP apunta a un emulador ESC/POS, de modo que el agente
+recorre `winspool.drv -> spooler -> puerto -> impresora` exactamente igual
+que en la tienda. Lo único que cambia es qué hay al otro lado del cable.
+
+No hace falta ser administrador:
+
+```powershell
+Add-PrinterDriver -Name "Generic / Text Only"
+Add-PrinterPort -Name "EmuladorPOS_9100" -PrinterHostAddress "127.0.0.1" -PortNumber 9100
+Add-Printer -Name "POS" -DriverName "Generic / Text Only" -PortName "EmuladorPOS_9100"
+```
+
+El nombre de la impresora (`POS`) tiene que coincidir con el campo
+"Nombre de la impresora" de la estación en **Estaciones**. Si tu estación
+usa otro nombre, ponle ese aquí y no hace falta tocar la base de datos.
+
+Al otro lado del puerto tiene que haber algo escuchando en el 9100: el
+`npm run sim` de este mismo paquete, o un emulador de escritorio.
+
+Para deshacerlo cuando llegue la impresora de verdad:
+
+```powershell
+Remove-Printer -Name "POS"
+Remove-PrinterPort -Name "EmuladorPOS_9100"
+```
+
 ### Ver solo cómo queda el papel
 
 Si únicamente quieres revisar la maquetación —qué entra en 48 columnas,
