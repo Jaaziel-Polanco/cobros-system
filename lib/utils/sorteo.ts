@@ -115,8 +115,15 @@ export function seleccionarGanadores(
         }
     }
 
-    // Orden canónico: sin esto, el resultado dependería del ORDER BY de la consulta
-    const ordenado = [...pool].sort((a, b) => a.numero - b.numero)
+    // Orden canónico: sin esto, el resultado dependería del ORDER BY de la consulta.
+    // Se desempata por `id` (único siempre, garantizado por la base) en vez de
+    // confiar solo en `numero`. Hoy `numero` es único por sorteo por un índice
+    // de base de datos, pero esa es una garantía externa a este archivo: si
+    // algún día dos boletos comparten `numero` (o llega un valor repetido/NaN),
+    // sin el desempate el orden de entrada volvería a filtrarse en el resultado
+    // y el sorteo dejaría de ser reproducible. Con `id` como segundo criterio,
+    // el orden canónico es total pase lo que pase con `numero`.
+    const ordenado = [...pool].sort((a, b) => a.numero - b.numero || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
 
     const barajado = barajarDeterminista(ordenado, mulberry32(hashSemilla(semilla)))
 

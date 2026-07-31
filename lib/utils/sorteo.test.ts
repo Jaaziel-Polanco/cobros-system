@@ -197,4 +197,74 @@ describe('seleccionarGanadores', () => {
     it('rechaza una semilla vacía', () => {
         expect(() => seleccionarGanadores(pool(10), 1, '')).toThrow()
     })
+
+    // ANCLA DE REGRESIÓN: valor exacto precalculado con la implementación
+    // actual (ya verificada como correcta). Las pruebas de arriba solo
+    // comprueban propiedades relacionales (misma semilla → mismo resultado,
+    // ningún cliente repetido, etc.) y esas propiedades las cumple igual un
+    // barajado sesgado -- por ejemplo, el error clásico de Fisher-Yates de
+    // usar `rng() * i` en vez de `rng() * (i + 1)` produce una permutación
+    // válida, con todos los elementos presentes y sin clientes repetidos,
+    // pero estadísticamente sesgada. Esta prueba fija el resultado byte a
+    // byte: cualquier cambio en el algoritmo (a propósito o por descuido) la
+    // rompe. Si falla, NO se ajusta el valor esperado sin más: hay que
+    // entender por qué cambió el barajado y documentar la decisión, porque
+    // ese cambio invalida la reproducibilidad de cualquier sorteo ya
+    // ejecutado con la versión anterior.
+    it('reproduce exactamente un resultado precalculado (ancla anti-sesgo)', () => {
+        const p = pool(8)
+        const r = seleccionarGanadores(p, 3, 'ancla-regresion-v1')
+
+        expect(r.ganadores.map(g => g.id)).toEqual(['t8', 't5', 't1'])
+        expect(r.orden).toEqual([
+            { ticketId: 't8', orden: 0 },
+            { ticketId: 't5', orden: 1 },
+            { ticketId: 't1', orden: 2 },
+            { ticketId: 't6', orden: 3 },
+            { ticketId: 't3', orden: 4 },
+            { ticketId: 't2', orden: 5 },
+            { ticketId: 't7', orden: 6 },
+            { ticketId: 't4', orden: 7 },
+        ])
+    })
+})
+
+describe('barajarDeterminista (distribución)', () => {
+    // Prueba estadística ligera: con un pool pequeño, un barajado correcto
+    // debe repartir cada elemento de forma razonablemente pareja entre todas
+    // las posiciones finales, a lo largo de miles de semillas distintas. Un
+    // barajado sesgado (por ejemplo, el bug de `rng() * i` en vez de
+    // `rng() * (i + 1)`) dejará alguna celda muy por debajo -- típicamente en
+    // cero, porque el último elemento nunca puede terminar en su propia
+    // posición original -- aunque las pruebas relacionales de arriba no lo
+    // detecten.
+    //
+    // Se verificó manualmente (fuera de esta suite) que si se introduce esa
+    // mutación exacta en `barajarDeterminista`, esta prueba falla: con 3000
+    // semillas y 4 elementos, la implementación correcta reparte cada celda
+    // entre ~700 y ~800 (esperado ~750), mientras que la mutada deja varias
+    // celdas en 0. El umbral de abajo es deliberadamente generoso (30% del
+    // valor esperado) para no fallar por ruido estadístico normal.
+    it('reparte cada elemento entre todas las posiciones sin favoritismos', () => {
+        const items = ['A', 'B', 'C', 'D']
+        const nSemillas = 3000
+        const esperadoPorCelda = nSemillas / items.length
+        const umbralMinimo = esperadoPorCelda * 0.3
+
+        const conteo = new Map<string, number[]>()
+        for (const it of items) conteo.set(it, [0, 0, 0, 0])
+
+        for (let semilla = 1; semilla <= nSemillas; semilla++) {
+            const barajado = barajarDeterminista(items, mulberry32(semilla))
+            barajado.forEach((elemento, posicion) => {
+                conteo.get(elemento)![posicion]++
+            })
+        }
+
+        for (const it of items) {
+            for (const c of conteo.get(it)!) {
+                expect(c).toBeGreaterThan(umbralMinimo)
+            }
+        }
+    })
 })
