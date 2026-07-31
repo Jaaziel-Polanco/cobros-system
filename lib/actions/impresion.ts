@@ -60,6 +60,16 @@ export async function getEstadoEstacionDeUsuario(): Promise<{
  * cuando el trabajo anterior ya terminó (`impreso`, `error` o `cancelado`);
  * nunca puede haber dos impresiones del mismo boleto esperando a la vez, o
  * saldrían dos boletos físicos idénticos del papel.
+ *
+ * La comprobación previa (SELECT) es solo la vía rápida del caso común: no
+ * cierra la ventana de carrera por sí sola (dos peticiones casi
+ * simultáneas pueden leer ambas "no existe" antes de que cualquiera
+ * inserte). Quien la cierra de verdad es el índice único parcial
+ * `uq_print_jobs_ticket_en_vuelo` (20260730_05_dedup_print_jobs.sql), igual
+ * que `uq_tickets_pago` cierra la carrera de `emitir_ticket`. Si el INSERT
+ * choca con ese índice, se trata como éxito: se relee el trabajo que ganó
+ * la carrera y se devuelve `nuevo: false`, en vez de dejar escapar un error
+ * crudo de Postgres hacia la interfaz.
  */
 export async function imprimirTicket(
     ticketId: string,
@@ -141,7 +151,29 @@ export async function imprimirTicket(
         .select('id')
         .single()
 
-    if (error) throw new Error(error.message)
+    if (error) {
+        // 23505 = unique_violation. Otra petición ganó la carrera contra
+        // uq_print_jobs_ticket_en_vuelo entre nuestro SELECT y este INSERT
+        // (dos clics casi simultáneos, dos pestañas). No es un error real
+        // desde el punto de vista del usuario: su boleto ya está en cola,
+        // solo que lo encoló la otra petición. Mismo criterio que
+        // emitir_ticket en 20260729_04_emitir_ticket.sql (EXCEPTION WHEN
+        // unique_violation): se relee el trabajo ganador y se devuelve.
+        if (error.code === '23505') {
+            const { data: jobGanador } = await supabase
+                .from('print_jobs')
+                .select('id')
+                .eq('ticket_id', ticket.id)
+                .in('estado', ['pendiente', 'reclamado'])
+                .limit(1)
+                .maybeSingle()
+
+            if (jobGanador) {
+                return { jobId: jobGanador.id, nuevo: false }
+            }
+        }
+        throw new Error(error.message)
+    }
 
     revalidatePath(`/clientes/${ticket.cliente_id}`)
     revalidatePath('/tickets')
