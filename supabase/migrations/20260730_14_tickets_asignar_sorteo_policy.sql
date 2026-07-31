@@ -25,8 +25,23 @@
 -- policy sigue el mismo patrón: no está atada a agente_id.
 --
 -- USING se restringe a sorteo_id IS NULL para minimizar el radio de la
--- policy (no habilita reescribir boletos que ya pertenecen a un sorteo);
--- WITH CHECK exige el mismo permiso sobre la fila resultante.
+-- policy (no habilita reescribir boletos que ya pertenecen a un sorteo).
+--
+-- CORRECCIÓN (revisión posterior a la primera versión de esta migración):
+-- el WITH CHECK original solo exigía el permiso, sin restringir cómo debía
+-- quedar la fila. RLS no distingue columnas, pero SÍ puede exigir la forma
+-- de la fila resultante -- y sin eso, esta misma policy también habría
+-- servido para, con la excusa de "asignar a un sorteo", ANULAR un boleto
+-- huérfano (poner estado = 'anulado' dejando sorteo_id NULL, que sigue
+-- cumpliendo el USING) o para revertir la asignación dejándolo de nuevo sin
+-- sorteo (sorteo_id = NULL de nuevo). Ninguna de las dos es "asignar".
+--
+-- Con `estado = 'valido' AND sorteo_id IS NOT NULL` en el WITH CHECK,
+-- combinado con `sorteo_id IS NULL` en el USING, la fila solo puede transitar
+-- en una dirección (huérfano válido -> asignado a un sorteo, siempre válido)
+-- y esa transición solo puede ocurrir una vez: después de aplicarse,
+-- sorteo_id ya no es NULL, así que el USING deja de cumplirse y la misma
+-- policy no autoriza ningún UPDATE posterior sobre esa fila.
 -- ══════════════════════════════════════════════════════════════
 
 DROP POLICY IF EXISTS "tickets: asignar huerfanos a sorteo" ON public.tickets;
@@ -39,6 +54,8 @@ CREATE POLICY "tickets: asignar huerfanos a sorteo"
   )
   WITH CHECK (
     public.tiene_permiso('realizar_sorteo')
+    AND estado = 'valido'
+    AND sorteo_id IS NOT NULL
   );
 
 -- Mismo problema en ticket_eventos: la única policy de INSERT para agentes
