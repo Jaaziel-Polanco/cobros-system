@@ -107,6 +107,22 @@ describe('construirTirillaTicket', () => {
         expect(preview).not.toContain('Sorteo:')
     })
 
+    it('enmascara la cédula en el papel, igual que en el PDF', () => {
+        const { preview, bytes } = construirTirillaTicket(base)
+
+        // Visible: los dos últimos dígitos y la puntuación.
+        expect(preview).toContain('***-******7-8')
+
+        // Y sobre todo: la cédula completa NO puede aparecer, ni en la vista
+        // previa ni en los bytes que salen por la impresora. Se comprueban
+        // los dos por separado a propósito -- ya hubo una regresión en la
+        // que la vista previa recortaba texto que los bytes reales sí
+        // llevaban, o sea que la herramienta de depuración mentía justo
+        // cuando hacía falta que no mintiera.
+        expect(preview).not.toContain('001-1234567-8')
+        expect(bytes.includes(aBytes('001-1234567-8', 'cp850'))).toBe(false)
+    })
+
     it('funciona sin cédula ni texto legal', () => {
         const minimo: TirillaInput = {
             ...base,

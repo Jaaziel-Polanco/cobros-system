@@ -2,6 +2,7 @@ import type { TicketSnapshot } from '@/lib/types'
 import { aBytes, selectorCodepage } from './codificacion'
 import { CMD, TAMANO, comandoQR, columnasEfectivas } from './comandos'
 import { centrar, linea, dosColumnas, envolver } from './formato'
+import { enmascararDocumento } from '@/lib/utils/documento'
 
 export interface TirillaInput {
     numeroFormateado: string
@@ -108,7 +109,13 @@ export function construirTirillaTicket(
     // ─── Datos ────────────────────────────────────────────────
     const cliente = `${s.cliente.nombre} ${s.cliente.apellido}`
     for (const l of envolver(`Cliente:  ${cliente}`, cols)) escribir(l)
-    if (s.cliente.dni_ruc) escribir(dosColumnas('Cedula/RNC:', s.cliente.dni_ruc, cols))
+    // Enmascarada, igual que en el PDF y con la MISMA función: el papel se
+    // queda en el mostrador, se cae, se fotografía y acaba en la basura, y
+    // el boleto solo necesita identificar al cliente, no acreditarlo. El
+    // snapshot y la base siguen guardando la cédula completa; esto es solo
+    // presentación.
+    const documento = enmascararDocumento(s.cliente.dni_ruc)
+    if (documento) escribir(dosColumnas('Cedula/RNC:', documento, cols))
     escribir(dosColumnas('Fecha:', s.emitido_at_rd, cols))
 
     if (s.sorteo) {
