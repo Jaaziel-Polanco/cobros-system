@@ -227,6 +227,48 @@ describe('seleccionarGanadores', () => {
             { ticketId: 't4', orden: 7 },
         ])
     })
+
+    // Protege el desempate de `numero` (línea "Orden canónico" dentro de
+    // `seleccionarGanadores`). Con un pool sin duplicados ni NaN -como el de
+    // arriba- ese desempate nunca se ejecuta y una mutación en él (por
+    // ejemplo invertir `a.id < b.id ? -1 : 1` a `... ? 1 : -1`) pasa
+    // desapercibida para toda la suite. Aquí se fuerza el desempate a propósito
+    // con dos boletos de `numero` repetido y dos de `numero = NaN`, y se
+    // comprueba, con un valor exacto precalculado, que el resultado no
+    // depende de en qué orden llegue el pool. Esto es justo lo que hace que
+    // el sorteo se pueda recalcular meses después aunque `numero` deje de ser
+    // único por accidente (hoy lo garantiza un índice de base de datos, una
+    // garantía externa a este archivo) o llegue algún valor corrupto (NaN).
+    it('el desempate por id mantiene el resultado igual pase lo que pase con numero (duplicados y NaN)', () => {
+        const base: TicketParticipante[] = [
+            { id: 't1', numero: 3, cliente_id: 'c1' },
+            { id: 't2', numero: 3, cliente_id: 'c2' }, // numero duplicado con t1
+            { id: 't3', numero: NaN, cliente_id: 'c3' },
+            { id: 't4', numero: NaN, cliente_id: 'c4' }, // numero NaN duplicado con t3
+            { id: 't5', numero: 1, cliente_id: 'c5' },
+        ]
+        const original = base
+        const invertido = [...base].reverse()
+        const mezclado = [base[2], base[4], base[0], base[3], base[1]]
+
+        const semilla = 'ancla-empate-v1'
+        const cantidad = 3
+
+        const esperadoGanadores = ['t2', 't3', 't5']
+        const esperadoOrden = [
+            { ticketId: 't2', orden: 0 },
+            { ticketId: 't3', orden: 1 },
+            { ticketId: 't5', orden: 2 },
+            { ticketId: 't4', orden: 3 },
+            { ticketId: 't1', orden: 4 },
+        ]
+
+        for (const p of [original, invertido, mezclado]) {
+            const r = seleccionarGanadores(p, cantidad, semilla)
+            expect(r.ganadores.map(g => g.id)).toEqual(esperadoGanadores)
+            expect(r.orden).toEqual(esperadoOrden)
+        }
+    })
 })
 
 describe('barajarDeterminista (distribución)', () => {

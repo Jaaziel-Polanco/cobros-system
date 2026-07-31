@@ -123,7 +123,23 @@ export function seleccionarGanadores(
     // sin el desempate el orden de entrada volvería a filtrarse en el resultado
     // y el sorteo dejaría de ser reproducible. Con `id` como segundo criterio,
     // el orden canónico es total pase lo que pase con `numero`.
-    const ordenado = [...pool].sort((a, b) => a.numero - b.numero || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    //
+    // Ojo con NaN: `a.numero - b.numero` da NaN si cualquiera de los dos es
+    // NaN, y NaN es falsy, así que un patrón ingenuo `resta || desempate`
+    // caería al desempate por `id` incluso comparando con boletos de numero
+    // real (no solo entre sí), rompiendo la transitividad del orden y
+    // reintroduciendo la dependencia del orden de entrada. Por eso NaN se
+    // trata aparte: se manda siempre al final, de forma determinista.
+    const comparar = (a: TicketParticipante, b: TicketParticipante): number => {
+        const aEsNaN = Number.isNaN(a.numero)
+        const bEsNaN = Number.isNaN(b.numero)
+        if (aEsNaN && bEsNaN) return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+        if (aEsNaN) return 1
+        if (bEsNaN) return -1
+        if (a.numero === b.numero) return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+        return a.numero - b.numero
+    }
+    const ordenado = [...pool].sort(comparar)
 
     const barajado = barajarDeterminista(ordenado, mulberry32(hashSemilla(semilla)))
 
