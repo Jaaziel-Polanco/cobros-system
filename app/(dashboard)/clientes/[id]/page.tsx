@@ -9,7 +9,7 @@ import { cn } from '@/lib/utils'
 import { getTicketsCliente, getPagosSinTicket } from '@/lib/actions/tickets'
 import { getPermisos } from '@/lib/utils/permisos'
 import { TicketsClientePanel } from '@/components/tickets/tickets-cliente-panel'
-import { getEstadoEstacionDeUsuario } from '@/lib/actions/impresion'
+import { getEstadoEstacionDeUsuario, getEstadoImpresionTickets } from '@/lib/actions/impresion'
 
 const ETAPA_CSS: Record<string, string> = {
     preventivo: 'bg-green-500/20 text-green-300',
@@ -69,6 +69,11 @@ export default async function ClienteDetailPage({ params }: { params: Promise<{ 
     const tickets = permisos.ver_tickets ? await getTicketsCliente(id) : []
     const pagosSinTicket = permisos.ver_tickets ? await getPagosSinTicket(id) : []
     const estacion = permisos.imprimir_ticket ? await getEstadoEstacionDeUsuario() : null
+    // Objeto plano, no Map: los props de un Client Component (TicketsClientePanel)
+    // deben ser serializables por el protocolo de React Server Components.
+    const estadoImpresion = permisos.ver_tickets
+        ? Object.fromEntries(await getEstadoImpresionTickets(tickets.map(t => t.id)))
+        : {}
 
     const deudaActiva = cliente.deudas?.find((d: { estado: string }) => d.estado === 'activo')
 
@@ -216,6 +221,7 @@ export default async function ClienteDetailPage({ params }: { params: Promise<{ 
                             puedeEmitirDePago={permisos.ver_tickets}
                             puedeImprimir={permisos.imprimir_ticket}
                             estacion={estacion}
+                            estadoImpresion={estadoImpresion}
                         />
                     )}
 

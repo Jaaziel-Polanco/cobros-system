@@ -8,7 +8,7 @@ import { construirTirillaTicket } from '@/lib/escpos/tirilla-ticket'
 import { aBytes, selectorCodepage } from '@/lib/escpos/codificacion'
 import { CMD, TAMANO } from '@/lib/escpos/comandos'
 import { centrar, linea } from '@/lib/escpos/formato'
-import type { Ticket } from '@/lib/types'
+import type { Ticket, PrintJob, EstadoPrintJob } from '@/lib/types'
 
 /**
  * Cliente admin (service_role), sin sesión de usuario.
@@ -316,4 +316,235 @@ export async function imprimirPaginaDePrueba(
 
     revalidatePath('/estaciones')
     return { jobId: job.id }
+}
+
+// ─── Cola de impresión (administración) ────────────────────────
+//
+// Decisión de permisos de la Tarea 8, para que interfaz, Server Action y
+// policy RLS coincidan (defecto que ya se repitió seis veces entre el
+// Plan 1 y el 2):
+//
+//   · getColaImpresion / cancelarTrabajoImpresion / reencolarTrabajoImpresion
+//     son EXCLUSIVAS de administradores. La cola completa de una sucursal
+//     revela a qué boletos de QUÉ clientes pertenece cada trabajo, cosa que
+//     un agente no debe ver en bloque aunque sea de su propia sucursal. La
+//     interfaz solo las ofrece en /estaciones (ya redirige a quien no sea
+//     admin — app/(dashboard)/estaciones/page.tsx), la Server Action repite
+//     la comprobación de rol por si alguien la invoca sin pasar por esa
+//     página, y la policy "print_jobs: admin acceso total" (FOR ALL) ya
+//     cubre SELECT/UPDATE para admin: no hace falta ninguna policy nueva
+//     de UPDATE, porque a un agente nunca se le expone la acción.
+//
+//   · getEstadoImpresionTickets, en cambio, es de cualquiera que pueda ver
+//     el boleto: es el indicador discreto del perfil del cliente, gateado
+//     ahí por el permiso `ver_tickets`, no por rol. La policy de SELECT de
+//     print_jobs para no-admin ("print_jobs: ver los propios") solo cubría
+//     `solicitado_por = auth.uid()`; se amplió en
+//     20260730_12_print_jobs_ver_ticket_propio.sql para incluir también los
+//     trabajos de un ticket de un cliente propio, aunque los haya encolado
+//     otro usuario — si no, la cajera B no vería el estado del boleto que
+//     imprimió la cajera A para el mismo cliente.
+//
+// Nada de esto necesita comprobar permisos dentro de estas funciones más
+// allá de "hay sesión": la policy es quien decide fila por fila qué ve
+// cada usuario, y exigirAdmin() es quien decide qué usuario puede llamar
+// a las tres primeras.
+
+/** print_jobs con lo mínimo para mostrarlo en la cola sin una segunda
+ *  consulta: número de boleto (o nada, si es una página de prueba) y
+ *  nombre de la estación que lo reclamó. */
+export interface PrintJobConDetalle extends PrintJob {
+    ticket: { numero_formateado: string } | null
+    estacion: { nombre: string } | null
+}
+
+async function exigirAdminImpresion(mensaje: string) {
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) throw new Error('No autenticado')
+
+    const { data: perfil } = await supabase
+        .from('profiles').select('rol').eq('id', user.id).single()
+
+    if (perfil?.rol !== 'admin') throw new Error(mensaje)
+    return supabase
+}
+
+/** Orden de "lo más urgente primero": error y trabajos aún en curso antes
+ *  que los ya terminados, y dentro de cada grupo, el más antiguo primero. */
+const ORDEN_ESTADO_PRINT_JOB: Record<EstadoPrintJob, number> = {
+    error: 0,
+    reclamado: 1,
+    pendiente: 2,
+    impreso: 3,
+    cancelado: 4,
+}
+
+/**
+ * Cola de impresión de una sucursal (o de todas, sin argumento), para
+ * administradores. Solo trae lo que no terminó hace tiempo: los trabajos
+ * activos (pendiente/reclamado/error) sin límite de antigüedad, más
+ * cualquier trabajo —terminado o no— de las últimas 24 horas. Un trabajo
+ * `impreso` de hace un mes no aporta nada aquí; uno de hace 10 minutos sí,
+ * como confirmación de que salió bien.
+ */
+export async function getColaImpresion(sucursalId?: string): Promise<PrintJobConDetalle[]> {
+    const supabase = await exigirAdminImpresion('Solo un administrador puede ver la cola de impresión')
+
+    const hace24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+
+    let query = supabase
+        .from('print_jobs')
+        .select('*, ticket:tickets(numero_formateado), estacion:estaciones_impresion(nombre)')
+        .or(`estado.in.(pendiente,reclamado,error),created_at.gte.${hace24h}`)
+
+    if (sucursalId) query = query.eq('sucursal_id', sucursalId)
+
+    const { data, error } = await query
+    if (error) throw new Error(error.message)
+
+    const jobs = (data ?? []) as unknown as PrintJobConDetalle[]
+
+    return jobs.sort((a, b) => {
+        const porEstado = ORDEN_ESTADO_PRINT_JOB[a.estado] - ORDEN_ESTADO_PRINT_JOB[b.estado]
+        if (porEstado !== 0) return porEstado
+        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+    })
+}
+
+/** Trae `cliente_id` del boleto de un trabajo, para poder revalidar su
+ *  página tras cancelar/reencolar. `null` si es un trabajo de prueba. */
+function clienteIdDe(job: { tickets?: { cliente_id: string } | null }): string | null {
+    return job.tickets?.cliente_id ?? null
+}
+
+/**
+ * Cancela un trabajo `pendiente` o `reclamado`, con motivo.
+ *
+ * Es la salida al problema que motiva esta tarea: mientras un trabajo
+ * quede en uno de esos dos estados, el índice único parcial
+ * `uq_print_jobs_ticket_en_vuelo` bloquea cualquier otra impresión del
+ * mismo boleto. Pasarlo a `cancelado` libera ese índice de inmediato.
+ */
+export async function cancelarTrabajoImpresion(jobId: string, motivo: string): Promise<void> {
+    const supabase = await exigirAdminImpresion('Solo un administrador puede cancelar trabajos de impresión')
+
+    const motivoLimpio = motivo?.trim() ?? ''
+    if (motivoLimpio.length < 3) {
+        throw new Error('Escribe un motivo de al menos 3 caracteres')
+    }
+
+    const { data: job, error: errorLectura } = await supabase
+        .from('print_jobs')
+        .select('estado, tickets(cliente_id)')
+        .eq('id', jobId)
+        .single()
+
+    if (errorLectura || !job) throw new Error('Trabajo de impresión no encontrado')
+    if (job.estado !== 'pendiente' && job.estado !== 'reclamado') {
+        throw new Error('Solo se puede cancelar un trabajo pendiente o en curso')
+    }
+
+    const { error } = await supabase
+        .from('print_jobs')
+        .update({ estado: 'cancelado', error_mensaje: `Cancelado: ${motivoLimpio}` })
+        .eq('id', jobId)
+
+    if (error) throw new Error(error.message)
+
+    revalidatePath('/estaciones')
+    const clienteId = clienteIdDe(job as unknown as { tickets?: { cliente_id: string } | null })
+    if (clienteId) revalidatePath(`/clientes/${clienteId}`)
+}
+
+/**
+ * Devuelve a la cola un trabajo que terminó en `error`, para reintentar
+ * sin emitir otro boleto. Reinicia los intentos: si no, un trabajo que ya
+ * agotó `max_intentos` volvería a `pendiente` pero `reclamar_print_jobs`
+ * jamás lo entregaría (exige `intentos < max_intentos`), y se quedaría
+ * fantasma en la cola para siempre.
+ *
+ * Si el boleto ya tiene otro trabajo en vuelo, la actualización choca con
+ * `uq_print_jobs_ticket_en_vuelo` (23505): se traduce a un mensaje
+ * entendible en vez de dejar pasar el error crudo de Postgres.
+ */
+export async function reencolarTrabajoImpresion(jobId: string): Promise<{ jobId: string }> {
+    const supabase = await exigirAdminImpresion('Solo un administrador puede reencolar trabajos de impresión')
+
+    const { data: job, error: errorLectura } = await supabase
+        .from('print_jobs')
+        .select('estado, tickets(cliente_id)')
+        .eq('id', jobId)
+        .single()
+
+    if (errorLectura || !job) throw new Error('Trabajo de impresión no encontrado')
+    if (job.estado !== 'error') {
+        throw new Error('Solo se puede reencolar un trabajo que haya terminado en error')
+    }
+
+    const { error } = await supabase
+        .from('print_jobs')
+        .update({
+            estado: 'pendiente',
+            intentos: 0,
+            claimed_at: null,
+            estacion_id: null,
+            error_mensaje: null,
+        })
+        .eq('id', jobId)
+
+    if (error) {
+        // 23505 = unique_violation contra uq_print_jobs_ticket_en_vuelo: el
+        // boleto ya tiene otro trabajo pendiente/reclamado en este momento
+        // (por ejemplo, alguien lo reimprimió mientras este seguía en
+        // error). Mismo criterio que imprimirTicket() más arriba: nunca se
+        // deja escapar el 23505 crudo hacia la pantalla.
+        if (error.code === '23505') {
+            throw new Error(
+                'Este boleto ya tiene otra impresión en curso. Cancélala antes de reencolar esta.',
+            )
+        }
+        throw new Error(error.message)
+    }
+
+    revalidatePath('/estaciones')
+    const clienteId = clienteIdDe(job as unknown as { tickets?: { cliente_id: string } | null })
+    if (clienteId) revalidatePath(`/clientes/${clienteId}`)
+
+    return { jobId }
+}
+
+/**
+ * Estado del trabajo de impresión más reciente de cada boleto, para el
+ * indicador discreto del perfil del cliente. No exige ningún rol ni
+ * permiso aquí: quien no deba ver el trabajo de un boleto ajeno
+ * simplemente no lo recibe, por la policy de SELECT de print_jobs (ver
+ * nota de permisos más arriba) — la página del cliente ya gatea todo el
+ * panel con el permiso `ver_tickets` antes de llamar a esta función.
+ */
+export async function getEstadoImpresionTickets(
+    ticketIds: string[],
+): Promise<Map<string, EstadoPrintJob>> {
+    const mapa = new Map<string, EstadoPrintJob>()
+    if (ticketIds.length === 0) return mapa
+
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return mapa
+
+    const { data, error } = await supabase
+        .from('print_jobs')
+        .select('ticket_id, estado, created_at')
+        .in('ticket_id', ticketIds)
+        .order('created_at', { ascending: false })
+
+    if (error || !data) return mapa
+
+    // Ordenado por created_at DESC: la primera fila que se ve de cada
+    // ticket_id es la más reciente, así que basta con no sobrescribir.
+    for (const fila of data) {
+        if (!fila.ticket_id || mapa.has(fila.ticket_id)) continue
+        mapa.set(fila.ticket_id, fila.estado as EstadoPrintJob)
+    }
+    return mapa
 }

@@ -278,3 +278,19 @@ export const ESTADO_SORTEO_LABELS: Record<EstadoSorteo, string> = {
     activo: 'Activo',
     cerrado: 'Cerrado',
 }
+
+export const ESTADO_PRINT_JOB_LABELS: Record<EstadoPrintJob, string> = {
+    pendiente: 'En cola',
+    reclamado: 'Imprimiendo',
+    impreso: 'Impreso',
+    error: 'Error',
+    cancelado: 'Cancelado',
+}
+
+export const ESTADO_PRINT_JOB_COLORS: Record<EstadoPrintJob, string> = {
+    pendiente: 'bg-slate-500/20 text-slate-300',
+    reclamado: 'bg-blue-500/20 text-blue-300',
+    impreso: 'bg-green-500/20 text-green-300',
+    error: 'bg-red-500/20 text-red-300',
+    cancelado: 'bg-slate-500/20 text-slate-400',
+}

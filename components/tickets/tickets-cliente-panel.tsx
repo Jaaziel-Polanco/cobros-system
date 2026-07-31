@@ -11,8 +11,11 @@ import {
 } from '@/lib/actions/tickets'
 import { imprimirTicket } from '@/lib/actions/impresion'
 import { formatearFechaHoraRD } from '@/lib/utils/fecha-rd'
-import { ESTADO_TICKET_COLORS, ESTADO_TICKET_LABELS, ORIGEN_TICKET_LABELS } from '@/lib/types'
-import type { TicketConSorteoResumen } from '@/lib/types'
+import {
+    ESTADO_TICKET_COLORS, ESTADO_TICKET_LABELS, ORIGEN_TICKET_LABELS,
+    ESTADO_PRINT_JOB_COLORS, ESTADO_PRINT_JOB_LABELS,
+} from '@/lib/types'
+import type { TicketConSorteoResumen, EstadoPrintJob } from '@/lib/types'
 
 interface PagoSinBoleto {
     id: string
@@ -47,11 +50,17 @@ interface Props {
      *  vez de dejar que el usuario descubra el bloqueo al pulsar — igual
      *  que en el diálogo de confirmación de pago. */
     estacion?: { sucursalNombre: string; enLinea: boolean } | null
+    /** Estado del trabajo de impresión más reciente de cada boleto (por
+     *  `ticket_id`), para el indicador discreto junto al boleto. Ausente o
+     *  sin entrada para un boleto = nunca se encoló una impresión (o el
+     *  usuario actual no tiene visibilidad sobre ese trabajo). Objeto plano,
+     *  no Map: los props de un Client Component deben ser serializables. */
+    estadoImpresion?: Record<string, EstadoPrintJob>
 }
 
 export function TicketsClientePanel({
     clienteId, clienteNombre, tieneTelefono, tickets, pagosSinTicket, puedeGenerar,
-    puedeEmitirDePago, puedeImprimir = false, estacion = null,
+    puedeEmitirDePago, puedeImprimir = false, estacion = null, estadoImpresion = {},
 }: Props) {
     const [manualAbierto, setManualAbierto] = useState(false)
     const [pendiente, startTransition] = useTransition()
@@ -170,6 +179,17 @@ export function TicketsClientePanel({
                                     <span className="text-[10px] text-slate-500">
                                         {ORIGEN_TICKET_LABELS[t.origen]}
                                     </span>
+                                    {estadoImpresion[t.id] && (
+                                        <span
+                                            title="Estado de la última impresión"
+                                            className={cn(
+                                                'rounded px-1.5 py-0.5 text-[10px] font-medium',
+                                                ESTADO_PRINT_JOB_COLORS[estadoImpresion[t.id]],
+                                            )}
+                                        >
+                                            {ESTADO_PRINT_JOB_LABELS[estadoImpresion[t.id]]}
+                                        </span>
+                                    )}
                                 </div>
                                 <p className="mt-0.5 text-[11px] text-slate-500">
                                     {formatearFechaHoraRD(t.emitido_at)}

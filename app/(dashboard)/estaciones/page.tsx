@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { getSucursales, getEstaciones } from '@/lib/actions/estaciones'
+import { getColaImpresion } from '@/lib/actions/impresion'
 import { EstacionesView } from '@/components/estaciones/estaciones-view'
 import { PageHeader } from '@/components/layout/page-header'
 import { Printer } from 'lucide-react'
@@ -16,9 +17,10 @@ export default async function EstacionesPage() {
 
     if (perfil?.rol !== 'admin') redirect('/dashboard')
 
-    const [sucursales, estaciones] = await Promise.all([
+    const [sucursales, estaciones, trabajosImpresion] = await Promise.all([
         getSucursales(),
         getEstaciones(),
+        getColaImpresion(),
     ])
 
     return (
@@ -28,7 +30,7 @@ export default async function EstacionesPage() {
                 description="Sucursales e impresoras POS conectadas al sistema"
                 icon={Printer}
             />
-            <EstacionesView sucursales={sucursales} estaciones={estaciones} />
+            <EstacionesView sucursales={sucursales} estaciones={estaciones} trabajosImpresion={trabajosImpresion} />
         </div>
     )
 }

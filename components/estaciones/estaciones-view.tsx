@@ -7,6 +7,8 @@ import {
     crearEstacion, actualizarEstacion, regenerarTokenEstacion,
 } from '@/lib/actions/estaciones'
 import { imprimirPaginaDePrueba } from '@/lib/actions/impresion'
+import type { PrintJobConDetalle } from '@/lib/actions/impresion'
+import { ColaImpresion } from './cola-impresion'
 import { CODEPAGES } from '@/lib/escpos/codificacion'
 import { ANCHO_COLS_MIN, ANCHO_COLS_MAX } from '@/lib/validations/estaciones'
 import type { Sucursal, EstacionImpresion, TipoConexionEstacion } from '@/lib/types'
@@ -26,6 +28,11 @@ import { cn } from '@/lib/utils'
 interface EstacionesViewProps {
     sucursales: Sucursal[]
     estaciones: EstacionImpresion[]
+    /** Cola de impresión de todas las sucursales, para el bloque bajo cada
+     *  estación. Ausente para quien no cargue getColaImpresion(); en la
+     *  práctica siempre llega, porque esta vista solo la renderiza la
+     *  página de administración (`/estaciones`). */
+    trabajosImpresion?: PrintJobConDetalle[]
 }
 
 // ─── Dialog: crear/editar sucursal ─────────────────────────────
@@ -310,7 +317,7 @@ function TokenDialog({ open, onClose, tokenPlano }: { open: boolean; onClose: ()
 
 // ─── Vista principal ────────────────────────────────────────────
 
-export function EstacionesView({ sucursales, estaciones }: EstacionesViewProps) {
+export function EstacionesView({ sucursales, estaciones, trabajosImpresion = [] }: EstacionesViewProps) {
     const [sucursalFormOpen, setSucursalFormOpen] = useState(false)
     const [editSucursal, setEditSucursal] = useState<Sucursal | undefined>()
     const [estacionFormOpen, setEstacionFormOpen] = useState(false)
@@ -468,6 +475,13 @@ export function EstacionesView({ sucursales, estaciones }: EstacionesViewProps) 
                                             onClick={() => handleImprimirPrueba(est.id)}>
                                             <PrinterCheck className="w-3.5 h-3.5" />Imprimir página de prueba
                                         </Button>
+                                    </div>
+
+                                    <div className="border-t border-white/5 pt-3">
+                                        <h4 className="mb-1.5 text-xs font-semibold text-slate-400">Cola de impresión</h4>
+                                        <ColaImpresion
+                                            jobs={trabajosImpresion.filter(j => j.sucursal_id === est.sucursal_id)}
+                                        />
                                     </div>
                                 </div>
                             )
