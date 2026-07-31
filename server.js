@@ -41,6 +41,7 @@ const app = next({ dev: isDev, hostname: HOSTNAME, port: PORT });
 const handle = app.getRequestHandler();
 
 let cronTask = null;
+let purgaTask = null;
 let isShuttingDown = false;
 
 async function dispararRecordatorios() {
@@ -89,7 +90,23 @@ async function dispararRecordatorios() {
 }
 
 const PURGA_SCHEDULE = process.env.PURGA_SCHEDULE ?? "30 3 * * *";
-const PURGA_DIAS = parseInt(process.env.PURGA_DIAS ?? "7", 10);
+
+// parseInt de un valor no numérico da NaN. NaN se serializa como `null` en
+// JSON.stringify, y el RPC purgar_payloads_impresos(p_dias) recibe un NULL
+// explícito — que en PL/pgSQL NO dispara el DEFAULT 7 del parámetro (eso
+// solo pasa cuando el argumento se omite del todo). El resultado era una
+// purga que corre sin ningún error, filtra por
+// "COALESCE(impreso_at, created_at) < NOW() - (NULL || ' days')::INTERVAL"
+// — que también da NULL — y por tanto no purga NUNCA una sola fila, en
+// silencio. Con respaldo explícito a 7 si el valor no es un entero positivo.
+const PURGA_DIAS_RAW = parseInt(process.env.PURGA_DIAS ?? "7", 10);
+const PURGA_DIAS =
+  Number.isFinite(PURGA_DIAS_RAW) && PURGA_DIAS_RAW > 0 ? PURGA_DIAS_RAW : 7;
+if (process.env.PURGA_DIAS !== undefined && PURGA_DIAS_RAW !== PURGA_DIAS) {
+  console.error(
+    `[PURGA] ⚠️ PURGA_DIAS="${process.env.PURGA_DIAS}" no es un entero positivo válido. Usando ${PURGA_DIAS} por defecto.`,
+  );
+}
 
 /**
  * Vacía el contenido ESC/POS de los trabajos de impresión ya terminados.
@@ -138,6 +155,11 @@ function gracefulShutdown(signal) {
   if (cronTask) {
     cronTask.stop();
     console.log("[CRON] Tarea programada detenida.");
+  }
+
+  if (purgaTask) {
+    purgaTask.stop();
+    console.log("[PURGA] Tarea programada detenida.");
   }
 
   server.close(() => {
@@ -194,12 +216,21 @@ app.prepare().then(() => {
       '[CRON] 💡 Para probar ahora: ve a /simulador y usa "Disparar Cron ahora"\n',
     );
 
+    // Mismo criterio que CRON_SCHEDULE arriba: una expresión inválida se
+    // reporta fuerte y claro, en vez de desactivar la purga en silencio
+    // (que era el comportamiento anterior — sin el `else`, un typo en
+    // PURGA_SCHEDULE dejaba la base creciendo para siempre sin ningún
+    // aviso en el log).
     if (cron.validate(PURGA_SCHEDULE)) {
-      cron.schedule(PURGA_SCHEDULE, purgarPayloadsImpresion, {
+      purgaTask = cron.schedule(PURGA_SCHEDULE, purgarPayloadsImpresion, {
         timezone: "America/Santo_Domingo",
       });
       console.log(
         `[PURGA] 🧹 Programada: "${PURGA_SCHEDULE}" (retención: ${PURGA_DIAS} días)`,
+      );
+    } else {
+      console.error(
+        `[PURGA] ❌ Expresión inválida: "${PURGA_SCHEDULE}". Purga deshabilitada.`,
       );
     }
 

@@ -52,7 +52,14 @@ BEGIN
   FROM public.reclamar_print_jobs(v_estacion, v_sucursal, 10);
   ASSERT v_conteo = 0, 'Caso 2: no debió reclamar trabajos ya reclamados';
 
-  -- Caso 3: un trabajo colgado hace más de 90 s vuelve a la cola
+  -- Caso 3: un trabajo colgado hace más de 90 s vuelve a la cola, y deja
+  -- rastro en ticket_eventos (Importante 4 de la revisión del Plan 2: un
+  -- 401 en el ack de éxito, p. ej. token regenerado, deja el trabajo
+  -- 'reclamado' sin confirmar; cuando el servidor lo recupera pasados
+  -- 90 s, si se reentrega y se reimprime, el papel sale sin marca COPIA
+  -- porque veces_impreso nunca se incrementó. El evento en el historial
+  -- del cliente es lo único que avisa de eso antes de que alguien
+  -- reimprima a ciegas).
   UPDATE public.print_jobs
      SET claimed_at = NOW() - INTERVAL '2 minutes'
    WHERE id = v_job1;
@@ -64,6 +71,11 @@ BEGIN
   SELECT intentos INTO v_conteo FROM public.print_jobs WHERE id = v_job1;
   ASSERT v_conteo = 2, 'Caso 3: el reintento debió incrementar el contador';
 
+  SELECT count(*) INTO v_conteo
+  FROM public.ticket_eventos
+  WHERE ticket_id = v_ticket AND tipo = 'impreso' AND estado = 'error';
+  ASSERT v_conteo = 1, 'Caso 3: la recuperación debió dejar un evento en el historial del boleto';
+
   -- Caso 4: agotados los intentos, el colgado pasa a error y no se reintenta
   UPDATE public.print_jobs
      SET claimed_at = NOW() - INTERVAL '2 minutes', intentos = 3
@@ -73,6 +85,11 @@ BEGIN
 
   ASSERT (SELECT estado FROM public.print_jobs WHERE id = v_job1) = 'error',
          'Caso 4: agotados los intentos el trabajo debe quedar en error';
+
+  SELECT count(*) INTO v_conteo
+  FROM public.ticket_eventos
+  WHERE ticket_id = v_ticket AND tipo = 'impreso' AND estado = 'error';
+  ASSERT v_conteo = 2, 'Caso 4: la recuperación por intentos agotados debió sumar otro evento';
 
   -- Caso 5: la purga limpia el payload de los impresos antiguos
   UPDATE public.print_jobs
@@ -110,6 +127,60 @@ BEGIN
   FROM public.reclamar_print_jobs(v_estacion, v_sucursal, 10)
   WHERE id = v_job2;
   ASSERT v_conteo = 0, 'Caso 6: un boleto ya impreso no debe reentregarse por poll';
+
+  -- Caso 7: un trabajo de prueba (CRÍTICO de la revisión del Plan 2) no
+  -- toca ningún boleto real. Requiere 20260730_07_print_jobs_prueba.sql
+  -- (ticket_id nullable + es_prueba + ck_print_jobs_prueba_sin_ticket).
+  DECLARE
+    v_ticket_impresiones_antes INTEGER;
+    v_ticket_impresiones_despues INTEGER;
+    v_job_prueba_1 UUID;
+    v_job_prueba_2 UUID;
+  BEGIN
+    SELECT veces_impreso INTO v_ticket_impresiones_antes
+    FROM public.tickets WHERE id = v_ticket;
+
+    INSERT INTO public.print_jobs (ticket_id, es_prueba, sucursal_id, payload_escpos)
+    VALUES (NULL, TRUE, v_sucursal, 'PRUEBA-1') RETURNING id INTO v_job_prueba_1;
+
+    -- Dos pruebas simultáneas para la MISMA sucursal no deben chocar entre
+    -- sí: uq_print_jobs_ticket_en_vuelo es sobre (ticket_id), y en
+    -- PostgreSQL ningún NULL es igual a otro NULL a efectos de un índice
+    -- único, así que ambas filas con ticket_id NULL conviven sin problema.
+    INSERT INTO public.print_jobs (ticket_id, es_prueba, sucursal_id, payload_escpos)
+    VALUES (NULL, TRUE, v_sucursal, 'PRUEBA-2') RETURNING id INTO v_job_prueba_2;
+
+    -- No se puede insertar un trabajo de prueba con ticket_id, ni un
+    -- trabajo "real" sin ticket_id: ck_print_jobs_prueba_sin_ticket lo
+    -- impide en los dos sentidos.
+    BEGIN
+      INSERT INTO public.print_jobs (ticket_id, es_prueba, sucursal_id, payload_escpos)
+      VALUES (v_ticket, TRUE, v_sucursal, 'X');
+      ASSERT FALSE, 'Caso 7: una prueba con ticket_id debió rechazarse';
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
+
+    BEGIN
+      INSERT INTO public.print_jobs (ticket_id, es_prueba, sucursal_id, payload_escpos)
+      VALUES (NULL, FALSE, v_sucursal, 'X');
+      ASSERT FALSE, 'Caso 7: un trabajo real sin ticket_id debió rechazarse';
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
+
+    PERFORM public.reclamar_print_jobs(v_estacion, v_sucursal, 10);
+
+    UPDATE public.print_jobs SET estado = 'impreso', impreso_at = NOW()
+     WHERE id IN (v_job_prueba_1, v_job_prueba_2);
+
+    SELECT veces_impreso INTO v_ticket_impresiones_despues
+    FROM public.tickets WHERE id = v_ticket;
+
+    ASSERT v_ticket_impresiones_antes = v_ticket_impresiones_despues,
+           'Caso 7: un trabajo de prueba jamás debe tocar veces_impreso de un boleto real';
+
+    ASSERT (SELECT count(*) FROM public.ticket_eventos WHERE ticket_id = v_ticket AND detalle LIKE '%PRUEBA%') = 0,
+           'Caso 7: un trabajo de prueba no debe dejar rastro en el historial de ningún boleto';
+  END;
 
   RAISE NOTICE 'TODAS LAS VERIFICACIONES PASARON';
 END $$;

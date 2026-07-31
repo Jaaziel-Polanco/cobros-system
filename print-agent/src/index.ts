@@ -1,6 +1,6 @@
 import { cargarConfig } from './config'
 import { configurarLog, log } from './logger'
-import { ClienteApi, calcularBackoff, VERSION_AGENTE, type RespuestaHello } from './api'
+import { ClienteApi, calcularBackoff, VERSION_AGENTE, ErrorHttp, type RespuestaHello } from './api'
 import { imprimir } from './impresora'
 import { decodificarBase64Estricto } from './base64'
 import type { DestinoImpresora, TrabajoImpresion } from './tipos'
@@ -16,19 +16,38 @@ function dormir(ms: number): Promise<void> {
 }
 
 /**
- * `poll` puede traer un `{ ip, port }` más reciente que el del `hello`
- * (una estación de red puede cambiar de IP sin reiniciar el agente). Pero
- * solo trae eso: `tipo_conexion` y `impresora_nombre` los fija el `hello`
- * para toda la sesión, así que aquí se completa lo que falte en vez de
- * reemplazar el destino entero — si se sustituyera sin más, una estación
- * `windows` perdería su nombre en cuanto `poll` devolviera algo.
+ * Destino de impresión a usar en esta vuelta del bucle.
+ *
+ * ANTES este agente se quedaba para siempre con el destino que le dio el
+ * `hello` de arranque (o, en una versión intermedia, solo refrescaba
+ * `ip`/`port` y seguía cacheando `tipo_conexion`/`nombre`). Reproducido en
+ * vivo: con el agente corriendo, cambiar la estación de 'red' a 'windows'
+ * — o solo el nombre de la impresora Windows — no tenía ningún efecto
+ * hasta reiniciar el proceso a mano, y cada trabajo mientras tanto fallaba
+ * con un mensaje que contradecía lo que decía la base. Peor aún: los
+ * reintentos se consumían en segundos y el trabajo quedaba en 'error'
+ * definitivo por una estación mal configurada del lado del agente, no del
+ * servidor.
+ *
+ * La corrección de raíz: el servidor manda el destino COMPLETO en cada
+ * respuesta de `poll` (ver app/api/print/poll/route.ts), y aquí se usa
+ * ese, sin cachear nada entre vueltas. `saludo.impresora` del `hello`
+ * solo sirve como respaldo si alguna vez llega una respuesta de `poll`
+ * sin el campo `impresora` (servidor viejo, respuesta corrupta): no debe
+ * tumbar el bucle, pero tampoco es el camino normal.
  */
-function resolverDestino(
+export function resolverDestino(
     saludo: RespuestaHello,
-    dePoll: { ip: string; port: number } | undefined,
+    dePoll: unknown,
 ): DestinoImpresora {
-    if (!dePoll || saludo.impresora.tipo_conexion !== 'red') return saludo.impresora
-    return { ...saludo.impresora, ip: dePoll.ip, port: dePoll.port }
+    if (
+        dePoll && typeof dePoll === 'object'
+        && (dePoll as { tipo_conexion?: unknown }).tipo_conexion !== undefined
+        && (dePoll as { port?: unknown }).port !== undefined
+    ) {
+        return dePoll as DestinoImpresora
+    }
+    return saludo.impresora
 }
 
 /**
@@ -59,6 +78,23 @@ function jobsValidos(jobs: unknown): TrabajoImpresion[] {
  * colgado por su cuenta (ver `reclamar_print_jobs`), que reimprime como
  * mucho una vez — mejor que reimprimir en cada fallo de red.
  */
+/**
+ * 401 (token inválido o estación desactivada) no es un fallo transitorio:
+ * si el primer intento lo recibe, el segundo y el tercero lo van a
+ * recibir también — es la misma credencial rechazada por el mismo motivo,
+ * dos segundos después. Antes el agente los trataba igual que un timeout
+ * de red: 3 reintentos separados por 1 s, menos de 3 segundos en total, y
+ * luego el mismo mensaje ambiguo de "no se pudo confirmar" que un
+ * problema de red de verdad. Eso es engañoso dos veces: gasta los
+ * reintentos sin ninguna chance de que el resultado cambie, y el mensaje
+ * final no dice lo único que de verdad hace falta saber — que hay que ir
+ * a revisar el token o el estado de la estación en /estaciones, no
+ * esperar a que la red se recupere sola.
+ */
+export function esFalloDefinitivo(e: unknown): e is ErrorHttp {
+    return e instanceof ErrorHttp && e.status === 401
+}
+
 async function confirmarImpreso(api: ClienteApi, jobId: string): Promise<void> {
     for (let intento = 1; intento <= REINTENTOS_ACK_EXITO; intento++) {
         try {
@@ -66,6 +102,18 @@ async function confirmarImpreso(api: ClienteApi, jobId: string): Promise<void> {
             log.info(`Trabajo ${jobId} impreso`)
             return
         } catch (e) {
+            if (esFalloDefinitivo(e)) {
+                log.error(
+                    `Trabajo ${jobId} SE IMPRIMIÓ pero el servidor rechazó la confirmación con 401 ` +
+                    '(token inválido o estación desactivada). NO es un problema de red: reintentar no ' +
+                    'va a cambiar el resultado, así que no se insiste. ACCIÓN REQUERIDA: revisa en ' +
+                    '/estaciones que el token de esta estación siga vigente y que la estación esté ' +
+                    'activa. Este boleto puede reimprimirse SIN la marca "COPIA" cuando el servidor ' +
+                    'recupere el trabajo colgado (pasados 90 s) y alguien vuelva a encolarlo — ' +
+                    'verifícalo contra el papel antes de reimprimir.',
+                )
+                return
+            }
             if (intento === REINTENTOS_ACK_EXITO) {
                 log.error(
                     `Trabajo ${jobId} SE IMPRIMIÓ pero no se pudo confirmar tras ${REINTENTOS_ACK_EXITO} intentos: ${(e as Error).message}. ` +

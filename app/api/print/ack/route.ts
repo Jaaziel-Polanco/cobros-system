@@ -26,7 +26,7 @@ export async function POST(req: Request) {
 
     const { data: job } = await supabase
         .from('print_jobs')
-        .select('id, ticket_id, intentos, max_intentos, es_copia, estado')
+        .select('id, ticket_id, es_prueba, intentos, max_intentos, es_copia, estado')
         .eq('id', jobId)
         .eq('sucursal_id', estacion.sucursal_id)
         .maybeSingle()
@@ -75,21 +75,32 @@ export async function POST(req: Request) {
             return NextResponse.json({ estado: actual?.estado ?? 'impreso' })
         }
 
-        const { data: ticket } = await supabase
-            .from('tickets').select('veces_impreso').eq('id', job.ticket_id).single()
+        // Un trabajo de prueba (es_prueba = true, ticket_id NULL: ver
+        // 20260730_07_print_jobs_prueba.sql) no es la impresión de ningún
+        // boleto real. Antes de esa migración, ticket_id venía atado "solo
+        // para satisfacer la clave foránea" al boleto real más reciente, y
+        // este bloque le inflaba veces_impreso y le insertaba un evento
+        // 'impreso' que nunca ocurrió — a un cliente que no tenía nada que
+        // ver con la prueba. Con ticket_id NULL esto ya no puede pasar por
+        // error, pero la comprobación explícita deja la intención clara y
+        // no depende de que nadie recuerde por qué ticket_id puede ser NULL.
+        if (!job.es_prueba && job.ticket_id) {
+            const { data: ticket } = await supabase
+                .from('tickets').select('veces_impreso').eq('id', job.ticket_id).single()
 
-        await supabase
-            .from('tickets')
-            .update({ veces_impreso: (ticket?.veces_impreso ?? 0) + 1 })
-            .eq('id', job.ticket_id)
+            await supabase
+                .from('tickets')
+                .update({ veces_impreso: (ticket?.veces_impreso ?? 0) + 1 })
+                .eq('id', job.ticket_id)
 
-        await supabase.from('ticket_eventos').insert({
-            ticket_id: job.ticket_id,
-            tipo: 'impreso',
-            estado: 'ok',
-            es_copia: job.es_copia,
-            detalle: `Impreso en ${estacion.nombre} (${estacion.sucursal_nombre})`,
-        })
+            await supabase.from('ticket_eventos').insert({
+                ticket_id: job.ticket_id,
+                tipo: 'impreso',
+                estado: 'ok',
+                es_copia: job.es_copia,
+                detalle: `Impreso en ${estacion.nombre} (${estacion.sucursal_nombre})`,
+            })
+        }
 
         return NextResponse.json({ estado: 'impreso' })
     }
@@ -120,7 +131,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ estado: actual?.estado ?? nuevoEstado })
     }
 
-    if (agotado) {
+    if (agotado && !job.es_prueba && job.ticket_id) {
         await supabase.from('ticket_eventos').insert({
             ticket_id: job.ticket_id,
             tipo: 'impreso',

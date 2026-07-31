@@ -1,5 +1,8 @@
 import { NextResponse } from 'next/server'
-import { autenticarEstacion, extraerToken, registrarLatido, clienteAdmin } from '@/lib/api-print/auth'
+import {
+    autenticarEstacion, extraerToken, registrarLatido, clienteAdmin,
+    type EstacionAutenticada,
+} from '@/lib/api-print/auth'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -7,6 +10,27 @@ export const maxDuration = 60
 
 const ESPERA_MAX_MS = 25_000
 const INTERVALO_MS = 1_500
+
+/**
+ * Destino de impresión completo, leído de fresco en CADA vuelta del poll
+ * (no solo del `hello` inicial).
+ *
+ * El agente vivía para siempre con el transporte que le dio el `hello` de
+ * arranque: cambiar una estación de 'red' a 'windows' (o simplemente el
+ * nombre de la impresora Windows) con el agente ya corriendo no tenía
+ * ningún efecto hasta reiniciarlo a mano, y mientras tanto cada trabajo
+ * fallaba con un mensaje que contradecía lo que decía la base. Devolver
+ * aquí el destino entero —no solo ip/port como antes— y que el agente lo
+ * use en cada vuelta en vez de lo que cacheó es la corrección de raíz.
+ */
+function destinoActual(estacion: EstacionAutenticada) {
+    return {
+        tipo_conexion: estacion.tipo_conexion,
+        ip: estacion.impresora_ip,
+        port: estacion.impresora_port,
+        nombre: estacion.impresora_nombre,
+    }
+}
 
 /** Espera `ms`, pero se corta antes si `signal` se aborta (cliente desconectado). */
 function dormir(ms: number, signal: AbortSignal) {
@@ -102,12 +126,12 @@ export async function POST(req: Request) {
                     payload_escpos: j.payload_escpos,
                     es_copia: j.es_copia,
                 })),
-                impresora: { ip: estacion.impresora_ip, port: estacion.impresora_port },
+                impresora: destinoActual(estacion),
             })
         }
 
         if (Date.now() - inicio >= esperaMax) {
-            return NextResponse.json({ jobs: [] })
+            return NextResponse.json({ jobs: [], impresora: destinoActual(estacion) })
         }
 
         await dormir(INTERVALO_MS, req.signal)

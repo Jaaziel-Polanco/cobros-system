@@ -7,7 +7,13 @@ import {
     crearEstacion, actualizarEstacion, regenerarTokenEstacion,
 } from '@/lib/actions/estaciones'
 import { imprimirPaginaDePrueba } from '@/lib/actions/impresion'
+import { CODEPAGES } from '@/lib/escpos/codificacion'
 import type { Sucursal, EstacionImpresion, TipoConexionEstacion } from '@/lib/types'
+
+/** Debe coincidir con ANCHO_COLS_MIN/MAX en lib/actions/estaciones.ts y
+ *  con el CHECK ck_estacion_ancho_cols de la base. */
+const ANCHO_COLS_MIN = 22
+const ANCHO_COLS_MAX = 80
 import { formatearFechaHoraRD } from '@/lib/utils/fecha-rd'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -221,11 +227,29 @@ function EstacionFormModal({
                     <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1.5">
                             <Label className="text-slate-300">Ancho (columnas)</Label>
-                            <Input type="number" className="bg-slate-800 border-white/10 text-white" value={anchoCols} onChange={e => setAnchoCols(Number(e.target.value))} />
+                            <Input
+                                type="number"
+                                min={ANCHO_COLS_MIN}
+                                max={ANCHO_COLS_MAX}
+                                required
+                                className="bg-slate-800 border-white/10 text-white"
+                                value={anchoCols}
+                                onChange={e => setAnchoCols(Number(e.target.value))}
+                            />
+                            <p className="text-xs text-slate-500">Entre {ANCHO_COLS_MIN} y {ANCHO_COLS_MAX}. Menos de {ANCHO_COLS_MIN} puede truncar el número del boleto.</p>
                         </div>
                         <div className="space-y-1.5">
                             <Label className="text-slate-300">Codepage</Label>
-                            <Input className="bg-slate-800 border-white/10 text-white" value={codepage} onChange={e => setCodepage(e.target.value)} />
+                            <Select value={codepage} onValueChange={setCodepage}>
+                                <SelectTrigger className="bg-slate-800 border-white/10 text-white">
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent className="bg-slate-800 border-white/10 text-white">
+                                    {Object.keys(CODEPAGES).map(cp => (
+                                        <SelectItem key={cp} value={cp}>{cp}</SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
                         </div>
                     </div>
                     {estacion && (

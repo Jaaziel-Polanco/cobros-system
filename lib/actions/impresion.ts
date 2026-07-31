@@ -1,6 +1,7 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
+import { createClient as createAdminClient } from '@supabase/supabase-js'
 import { revalidatePath } from 'next/cache'
 import { getPermisos } from '@/lib/utils/permisos'
 import { construirTirillaTicket } from '@/lib/escpos/tirilla-ticket'
@@ -8,6 +9,33 @@ import { aBytes, selectorCodepage } from '@/lib/escpos/codificacion'
 import { CMD, TAMANO } from '@/lib/escpos/comandos'
 import { centrar, linea } from '@/lib/escpos/formato'
 import type { Ticket } from '@/lib/types'
+
+/**
+ * Cliente admin (service_role), sin sesión de usuario.
+ *
+ * Se usa solo para la relectura de deduplicación de imprimirTicket: la
+ * única policy de SELECT de print_jobs para no-admin es
+ * `solicitado_por = auth.uid()`, así que con el cliente de sesión una
+ * cajera nunca ve el trabajo que otra cajera acaba de encolar para el
+ * mismo boleto. Sin esto, dos cajeras que intentan imprimir el mismo
+ * boleto casi a la vez: la primera gana el INSERT, la segunda choca
+ * contra uq_print_jobs_ticket_en_vuelo (23505), intenta releer con su
+ * propio cliente de sesión, no ve nada (no es suyo), y el mensaje crudo
+ * de Postgres sobre la violación de índice único se cuela hasta la
+ * pantalla. El cliente admin sí ve cualquier trabajo de la fila,
+ * exactamente lo que hace falta para devolver el trabajo real en vez de
+ * un error que nadie en caja puede interpretar.
+ *
+ * No reemplaza ninguna comprobación de permiso: esas siguen todas en el
+ * cliente de sesión, más arriba en imprimirTicket.
+ */
+function crearClienteAdmin() {
+    return createAdminClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.SUPABASE_SERVICE_ROLE_KEY!,
+        { auth: { autoRefreshToken: false, persistSession: false } },
+    )
+}
 
 /** Estación asociada al usuario actual, con su estado de conexión. */
 export async function getEstadoEstacionDeUsuario(): Promise<{
@@ -113,7 +141,16 @@ export async function imprimirTicket(
     // por un agente, aún no confirmado) para este boleto, se reutiliza en
     // vez de encolar otro. No hay ninguna forma de deshacer un corte de
     // papel ya hecho, así que esta comprobación va antes de construir nada.
-    const { data: jobExistente } = await supabase
+    //
+    // Con el cliente admin, no el de sesión: la única policy de SELECT de
+    // print_jobs para no-admin es `solicitado_por = auth.uid()`, así que
+    // si el trabajo en vuelo lo encoló OTRO usuario (otra cajera, otra
+    // pestaña con otra sesión), el cliente de sesión no lo vería nunca y
+    // esta comprobación fallaría en silencio, dejando pasar un INSERT que
+    // de todos modos va a chocar contra uq_print_jobs_ticket_en_vuelo más
+    // abajo. Ver crearClienteAdmin() arriba.
+    const clienteAdmin = crearClienteAdmin()
+    const { data: jobExistente } = await clienteAdmin
         .from('print_jobs')
         .select('id')
         .eq('ticket_id', ticket.id)
@@ -160,7 +197,13 @@ export async function imprimirTicket(
         // emitir_ticket en 20260729_04_emitir_ticket.sql (EXCEPTION WHEN
         // unique_violation): se relee el trabajo ganador y se devuelve.
         if (error.code === '23505') {
-            const { data: jobGanador } = await supabase
+            // Mismo motivo que la comprobación previa: el trabajo ganador
+            // puede ser de otro usuario, así que la relectura también usa
+            // el cliente admin. Con el de sesión, este `if` nunca
+            // encontraba nada cuando el ganador era otra cajera y el
+            // `throw new Error(error.message)` de abajo escupía el 23505
+            // crudo de Postgres a la pantalla.
+            const { data: jobGanador } = await clienteAdmin
                 .from('print_jobs')
                 .select('id')
                 .eq('ticket_id', ticket.id)
@@ -185,6 +228,13 @@ export async function imprimirTicket(
  * Encola una página de prueba en una estación concreta.
  * Incluye a propósito una línea con acentos y eñes: es la forma rápida de
  * comprobar que el codepage de esa impresora está bien configurado.
+ *
+ * Es un trabajo de servicio, no la impresión de un boleto: se encola con
+ * ticket_id NULL y es_prueba = true (ver crearEstacion/print_jobs en
+ * 20260730_07_print_jobs_prueba.sql), así que nunca toca tickets.
+ * veces_impreso ni ticket_eventos de ningún cliente, y funciona aunque no
+ * exista todavía ningún boleto en el sistema — justo el caso de una
+ * estación recién instalada, antes de emitir el primer boleto.
  */
 export async function imprimirPaginaDePrueba(
     estacionId: string,
@@ -238,20 +288,21 @@ export async function imprimirPaginaDePrueba(
 
     const bytes = Buffer.concat(partes)
 
-    // La página de prueba no pertenece a ningún boleto real; se ata al más
-    // reciente solo para satisfacer la clave foránea.
-    const { data: cualquierTicket } = await supabase
-        .from('tickets').select('id').order('created_at', { ascending: false })
-        .limit(1).maybeSingle()
-
-    if (!cualquierTicket) {
-        throw new Error('Emite al menos un boleto antes de imprimir una prueba')
-    }
-
+    // La página de prueba no pertenece a ningún boleto real: ticket_id
+    // queda NULL y es_prueba = true la marca como trabajo de servicio
+    // (20260730_07_print_jobs_prueba.sql). Antes se colgaba del boleto
+    // real más reciente "solo para satisfacer la clave foránea", lo que
+    // inflaba veces_impreso y el historial de un cliente ajeno a la
+    // prueba, y además bloqueaba su impresión real mientras la prueba
+    // seguía pendiente (uq_print_jobs_ticket_en_vuelo). Con ticket_id NULL
+    // eso ya no puede pasar, y de paso deja de exigir que exista al menos
+    // un boleto — justo lo que hace falta para probar una estación recién
+    // instalada, sin ningún cliente cargado todavía.
     const { data: job, error } = await supabase
         .from('print_jobs')
         .insert({
-            ticket_id: cualquierTicket.id,
+            ticket_id: null,
+            es_prueba: true,
             sucursal_id: estacion.sucursal_id,
             es_copia: true,
             payload_escpos: bytes.toString('base64'),

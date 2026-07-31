@@ -3,13 +3,16 @@ import type { TrabajoImpresion, DestinoImpresora } from './tipos'
 export interface RespuestaPoll {
     jobs: TrabajoImpresion[]
     /**
-     * Datos de red que trae `poll` para refrescarse sin esperar a un nuevo
-     * `hello`. Solo `ip`/`port`: el servidor no manda `tipo_conexion` ni
-     * `nombre` aquí porque el `hello` ya los fija para toda la sesión y una
-     * estación no cambia de transporte en caliente. El agente completa lo
-     * que falte con lo que le dio el `hello`.
+     * Destino de impresión completo, tal como está en la base AHORA MISMO.
+     * El servidor lo manda en cada respuesta de `poll` (haya o no trabajos)
+     * para que el agente nunca vote con datos más viejos que el último
+     * `hello`: una estación puede cambiar de 'red' a 'windows', de IP, de
+     * puerto o de nombre de impresora con el agente ya corriendo, y el
+     * próximo poll debe reflejarlo sin necesidad de reiniciar el proceso.
+     * Opcional solo por robustez ante una respuesta vieja o de un servidor
+     * más antiguo; en operación normal siempre viene.
      */
-    impresora?: { ip: string; port: number }
+    impresora?: DestinoImpresora
 }
 
 export interface RespuestaHello {
@@ -21,6 +24,23 @@ export interface RespuestaHello {
 }
 
 export const VERSION_AGENTE = '1.1.0'
+
+/**
+ * Error de una llamada HTTP al servidor, con el status adjunto.
+ *
+ * Sin esto, un 401 (token inválido, estación desactivada) y un timeout de
+ * red se veían idénticos desde `catch (e)`: un `Error` genérico cuyo
+ * único rastro del status era texto libre dentro de `.message`. El
+ * llamador necesita distinguirlos de verdad — un 401 no es transitorio y
+ * reintentarlo no sirve de nada — así que el status va en una propiedad,
+ * no enterrado en un string a parsear.
+ */
+export class ErrorHttp extends Error {
+    constructor(public readonly status: number, message: string) {
+        super(message)
+        this.name = 'ErrorHttp'
+    }
+}
 
 /** Espera creciente ante fallos consecutivos, con techo de 30 s. */
 export function calcularBackoff(fallosConsecutivos: number): number {
@@ -71,7 +91,10 @@ export class ClienteApi {
 
             if (!resp.ok) {
                 const texto = await resp.text().catch(() => '')
-                throw new Error(`${ruta} respondió ${resp.status}: ${this.sanear(texto.slice(0, 200))}`)
+                throw new ErrorHttp(
+                    resp.status,
+                    `${ruta} respondió ${resp.status}: ${this.sanear(texto.slice(0, 200))}`,
+                )
             }
 
             return await resp.json() as T

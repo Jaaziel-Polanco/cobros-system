@@ -212,9 +212,12 @@ export interface TicketEventoConUsuario extends Omit<TicketEvento, 'usuario'> {
 
 export interface PrintJob {
     id: string
-    ticket_id: string
+    /** NULL para trabajos de servicio (es_prueba = true): ver esa columna. */
+    ticket_id: string | null
     sucursal_id: string
     estado: EstadoPrintJob
+    /** true para páginas de prueba encoladas desde /estaciones. No representa un boleto real. */
+    es_prueba: boolean
     es_copia: boolean
     payload_escpos: string | null
     preview_texto: string | null
