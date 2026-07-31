@@ -603,7 +603,21 @@ export interface AsignacionTicketsResultado {
  * Asigna boletos sin sorteo a un sorteo concreto.
  *
  * No se renumeran: conservan su `numero_formateado` original, porque puede
- * haberse impreso o enviado ya al cliente.
+ * haberse impreso o enviado ya al cliente. El choque de número (huérfanos y
+ * boletos de sorteo numeran cada uno con su propio correlativo, así que
+ * pueden coincidir) se rechaza sin tocar el resto del lote.
+ *
+ * Delega TODO el trabajo en el RPC SECURITY DEFINER `asignar_tickets_a_sorteo`
+ * (supabase/migrations/20260730_16_asignar_tickets_a_sorteo.sql) en vez de
+ * leer/escribir `tickets` con el cliente de sesión. No es una preferencia de
+ * estilo: verificando contra producción con un agente real impersonado se
+ * confirmó que la vía por RLS tenía dos huecos irresolubles sin ampliar
+ * permanentemente qué columnas de `tickets` puede leer cualquier agente con
+ * `realizar_sorteo` (snapshot con la cédula del cliente y el token_publico
+ * incluidos) -- ver el historial en 20260730_15 (creada y revertida el mismo
+ * día). El RPC, al no pasar por RLS, no necesita ninguna policy de SELECT
+ * nueva y solo devuelve conteos e ids: nunca snapshot, nunca token_publico,
+ * nunca ningún dato del cliente.
  */
 export async function asignarTicketsASorteo(
     ticketIds: string[],
@@ -616,115 +630,22 @@ export async function asignarTicketsASorteo(
     }
     if (ticketIds.length === 0) return { asignados: 0, rechazadosPorNumero: [] }
 
-    const { data: sorteo } = await supabase
-        .from('sorteos').select('id, nombre, estado').eq('id', sorteoId).single()
-
-    if (!sorteo) throw new Error('Sorteo no encontrado')
-    if (sorteo.estado === 'cerrado') {
-        throw new Error('El sorteo está cerrado')
-    }
-
-    // Candidatos reales: huérfanos válidos entre los ids pedidos.
-    const { data: candidatos, error: candidatosError } = await supabase
-        .from('tickets')
-        .select('id, numero')
-        .in('id', ticketIds)
-        .is('sorteo_id', null)
-        .eq('estado', 'valido')
-
-    if (candidatosError) throw new Error(candidatosError.message)
-    if (!candidatos?.length) return { asignados: 0, rechazadosPorNumero: [] }
-
-    // Números ya ocupados en el sorteo destino (cualquier estado: el índice
-    // único no libera el número de un boleto anulado).
-    const { data: existentes, error: existentesError } = await supabase
-        .from('tickets')
-        .select('numero')
-        .eq('sorteo_id', sorteoId)
-
-    if (existentesError) throw new Error(existentesError.message)
-
-    const numerosUsados = new Set((existentes ?? []).map(t => t.numero))
-    const asignables = candidatos.filter(t => !numerosUsados.has(t.numero))
-    const rechazadosPorNumero = candidatos
-        .filter(t => numerosUsados.has(t.numero))
-        .map(t => t.id)
-
-    if (asignables.length === 0) {
-        return { asignados: 0, rechazadosPorNumero }
-    }
-
-    const { data, error } = await supabase
-        .from('tickets')
-        .update({ sorteo_id: sorteoId })
-        .in('id', asignables.map(t => t.id))
-        .is('sorteo_id', null)          // solo huérfanos, nunca robar de otro sorteo
-        .eq('estado', 'valido')
-        .select('id')
-
-    // Carrera improbable: entre la lectura de `existentes` y este UPDATE,
-    // otro proceso asignó al mismo sorteo un boleto con el mismo número que
-    // uno de nuestros `asignables`. Un UPDATE por lotes que choca con el
-    // índice único revierte el lote ENTERO (no solo la fila en conflicto),
-    // así que se reintenta fila por fila para no perder las asignaciones que
-    // sí eran válidas.
-    if (error?.code === '23505') {
-        const asignadosIndividual: { id: string }[] = []
-        const rechazadosCarrera: string[] = []
-        for (const t of asignables) {
-            const { data: fila, error: filaError } = await supabase
-                .from('tickets')
-                .update({ sorteo_id: sorteoId })
-                .eq('id', t.id)
-                .is('sorteo_id', null)
-                .eq('estado', 'valido')
-                .select('id')
-                .maybeSingle()
-            if (filaError || !fila) {
-                rechazadosCarrera.push(t.id)
-            } else {
-                asignadosIndividual.push(fila)
-            }
-        }
-        if (asignadosIndividual.length > 0) {
-            await supabase.from('ticket_eventos').insert(
-                asignadosIndividual.map(t => ({
-                    ticket_id: t.id,
-                    tipo: 'asignado_sorteo' as const,
-                    estado: 'ok' as const,
-                    detalle: `Asignado al sorteo "${sorteo.nombre}"`,
-                    usuario_id: user.id,
-                })),
-            )
-        }
-        revalidatePath('/tickets')
-        revalidatePath(`/sorteos/${sorteoId}`)
-        return {
-            asignados: asignadosIndividual.length,
-            rechazadosPorNumero: [...rechazadosPorNumero, ...rechazadosCarrera],
-        }
-    }
+    const { data, error } = await supabase.rpc('asignar_tickets_a_sorteo', {
+        p_ticket_ids: ticketIds,
+        p_sorteo_id: sorteoId,
+        p_asignado_por: user.id,
+    })
 
     if (error) throw new Error(error.message)
-
-    const asignados = data?.length ?? 0
-
-    if (asignados > 0) {
-        await supabase.from('ticket_eventos').insert(
-            data!.map(t => ({
-                ticket_id: t.id,
-                tipo: 'asignado_sorteo' as const,
-                estado: 'ok' as const,
-                detalle: `Asignado al sorteo "${sorteo.nombre}"`,
-                usuario_id: user.id,
-            })),
-        )
-    }
+    if (!data?.ok) throw new Error(data?.error ?? 'No se pudieron asignar los boletos')
 
     revalidatePath('/tickets')
     revalidatePath(`/sorteos/${sorteoId}`)
 
-    return { asignados, rechazadosPorNumero }
+    return {
+        asignados: (data.asignados as number) ?? 0,
+        rechazadosPorNumero: (data.rechazados_por_numero as string[]) ?? [],
+    }
 }
 
 /**

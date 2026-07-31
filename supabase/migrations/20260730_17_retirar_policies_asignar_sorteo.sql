@@ -1,0 +1,51 @@
+-- ══════════════════════════════════════════════════════════════
+-- Migración: retirar las policies de escritura que reemplaza el RPC
+-- asignar_tickets_a_sorteo (20260730_16)
+--
+-- DECISIÓN: retirarlas, no dejarlas como "defensa en profundidad".
+-- Razonamiento:
+--
+--   · SECURITY DEFINER no pasa por RLS. Estas dos policies NO protegen al
+--     RPC nuevo de nada -- si el RPC tuviera un bug, RLS no lo frenaría,
+--     porque el RPC ni siquiera las consulta. Su única función posible,
+--     una vez que lib/actions/tickets.ts llama al RPC en vez de escribir
+--     con el cliente de sesión, es servir de puerta ALTERNA para quien
+--     hable con la API de Supabase directamente (con su propio JWT),
+--     saltándose la aplicación por completo.
+--
+--   · Esa puerta alterna es, además, MÁS DÉBIL que el RPC: la policy de
+--     UPDATE de tickets ("tickets: asignar huerfanos a sorteo") no
+--     comprueba el estado del sorteo destino, así que por esa vía se
+--     podía asignar un huérfano a un sorteo YA CERRADO -- una regla de
+--     negocio que el RPC sí hace cumplir (bloquea con estado = 'cerrado').
+--     Conservar la policy no es "una capa más de seguridad", es dejar
+--     abierto un atajo que evita justo la validación que se acaba de
+--     centralizar en el RPC.
+--
+--   · La policy de INSERT sobre ticket_eventos ("ticket_eventos: agente
+--     registra asignacion de sorteo") tiene el mismo problema en su
+--     propia escala: permite insertar un evento tipo = 'asignado_sorteo'
+--     para CUALQUIER ticket_id, sin comprobar que ese boleto se haya
+--     asignado de verdad -- alguien con realizar_sorteo podría fabricar
+--     un evento de auditoría falso ("este boleto se asignó a tal sorteo")
+--     sin que ocurriera. El RPC inserta el evento él mismo, solo para los
+--     boletos que de verdad actualizó (ver UPDATE...RETURNING en
+--     20260730_16), así que esta policy tampoco le hace falta.
+--
+--   · Menos superficie es mejor superficie: cada policy activa es un sitio
+--     más donde puede repetirse la MISMA clase de error que motivó todo
+--     este cambio (una policy bien intencionada, pero con una implicación
+--     de RLS no evidente a simple vista). Si nadie necesita ya escribir
+--     `tickets.sorteo_id` ni insertar `ticket_eventos` con el cliente de
+--     sesión para este flujo, no hay razón para mantener la posibilidad
+--     abierta.
+--
+-- Si en el futuro hiciera falta un camino de escritura directo (por
+-- ejemplo, una herramienta de soporte que opera fuera de esta Server
+-- Action), debería diseñarse a propósito -- con sus propias
+-- comprobaciones de estado del sorteo y de integridad del evento -- en
+-- vez de reactivar esta policy tal cual.
+-- ══════════════════════════════════════════════════════════════
+
+DROP POLICY IF EXISTS "tickets: asignar huerfanos a sorteo" ON public.tickets;
+DROP POLICY IF EXISTS "ticket_eventos: agente registra asignacion de sorteo" ON public.ticket_eventos;

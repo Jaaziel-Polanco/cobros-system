@@ -1,37 +1,50 @@
 -- ══════════════════════════════════════════════════════════════
--- Migración: falta una policy de SELECT para que la asignación de
--- huérfanos funcione de verdad entre agentes distintos
+-- Migración: REVERTIDA -- esta policy se aplicó y se deshizo el mismo día
 --
--- HALLAZGO (al verificar 20260730_14 impersonando un agente real con
--- SET LOCAL ROLE authenticated + request.jwt.claims): Postgres exige que,
--- para un UPDATE o DELETE, la fila objetivo sea visible también a través
--- de alguna policy de SELECT aplicable -- no basta con que la policy de
--- UPDATE/ALL la autorice. Sin una policy de SELECT que cubra "huérfanos
--- para quien tiene realizar_sorteo", la única policy de SELECT no-admin
--- sobre `tickets` sigue siendo "tickets: agente ve los de sus clientes"
--- (exige ser dueño del cliente). Resultado comprobado en producción con
--- datos ZZTEST_ (creados y borrados en la misma sesión de verificación):
--- un agente con realizar_sorteo (y SIN ser dueño del cliente del boleto)
--- intentó asignar un huérfano válido, SIN choque de número, de OTRO
--- agente -- el UPDATE afectó 0 filas, sin error. La policy de
--- 20260730_14 en sí es correcta (USING/WITH CHECK bien formados y
--- confirmados en la misma sesión con un huérfano de un cliente PROPIO),
--- pero es letra muerta para el caso que la motivó: "el boleto huérfano a
--- asignar puede pertenecer a un cliente de OTRO agente" (comentario
--- original de 20260730_14) -- ese caso, tal como estaba, no funcionaba.
+-- HISTORIA (para que el archivo no mienta sobre lo que hay en producción):
+-- la versión original de este archivo creaba la policy de SELECT
+-- "tickets: ver huerfanos con permiso de sorteo" (huérfanos + permiso
+-- realizar_sorteo, sin exigir propiedad del cliente), para que
+-- asignarTicketsASorteo() pudiera al menos LOCALIZAR un huérfano de otro
+-- agente antes de actualizarlo (sin ella, el UPDATE afectaba 0 filas, sin
+-- error, tal como se explica en 20260730_14_tickets_asignar_sorteo_policy.sql).
 --
--- CORRECCIÓN: policy de SELECT gemela, con el mismo alcance que el USING
--- de la policy de UPDATE (huérfanos con permiso realizar_sorteo). No se
--- exige estado = 'valido' aquí a propósito: ver un huérfano anulado no es
--- peligroso (no se puede escribir sobre él por esta vía, ver 20260730_14)
--- y de todos modos facilita depurar/auditar qué boletos existen antes de
--- decidir a qué sorteo asignar cada uno.
+-- Se aplicó, se verificó contra producción impersonando un agente real, y
+-- se encontraron DOS problemas:
+--
+--   1) Exponía de más: cualquier usuario con realizar_sorteo podía leer la
+--      fila COMPLETA de cualquier boleto huérfano de cualquier cliente,
+--      incluyendo snapshot->cliente->dni_ruc (la cédula), teléfono, nombre
+--      y apellido, y el token_publico (la credencial de acceso a la
+--      página pública del boleto, /t/[token]) -- todo eso, para clientes
+--      que no eran ni siquiera suyos. RLS no distingue columnas: no había
+--      forma de conceder "solo numero" sin conceder también snapshot.
+--
+--   2) Y ni con eso arreglaba el problema de raíz: Postgres exige, además,
+--      que la fila RESULTANTE de un UPDATE siga siendo visible bajo
+--      alguna policy de SELECT para el mismo usuario. Un huérfano ajeno,
+--      tras asignarlo, deja de ser huérfano y sigue sin ser del cliente
+--      del agente -- ninguna policy de SELECT lo cubre ya -- así que el
+--      UPDATE se rechazaba de todos modos con "new row violates row-level
+--      security policy". El caso transversal que motivó todo esto seguía
+--      sin funcionar.
+--
+-- Es decir: se abrió una fuga de PII permanente (mientras el boleto
+-- siguiera huérfano) sin siquiera resolver el problema que la justificaba.
+-- Por eso se revirtió el mismo día, con el DROP POLICY de abajo.
+--
+-- LA CORRECCIÓN DE VERDAD vive en 20260730_16_asignar_tickets_a_sorteo.sql:
+-- un RPC SECURITY DEFINER que no pasa por RLS en absoluto, así que no
+-- necesita ninguna policy de SELECT nueva sobre `tickets` para funcionar,
+-- y solo devuelve conteos e ids -- nunca snapshot, nunca token_publico,
+-- nunca datos del cliente.
+--
+-- Este archivo queda como el DROP que se aplicó, no como el CREATE
+-- original: así, si alguna vez se reconstruye el esquema desde cero
+-- reproduciendo estas migraciones en orden, el resultado final coincide
+-- con lo que hay hoy en producción (la policy nunca llegó a existir de
+-- forma duradera). El IF EXISTS lo hace seguro también en ese escenario
+-- limpio, donde la policy nunca se creó.
 -- ══════════════════════════════════════════════════════════════
 
 DROP POLICY IF EXISTS "tickets: ver huerfanos con permiso de sorteo" ON public.tickets;
-CREATE POLICY "tickets: ver huerfanos con permiso de sorteo"
-  ON public.tickets FOR SELECT
-  USING (
-    sorteo_id IS NULL
-    AND public.tiene_permiso('realizar_sorteo')
-  );
