@@ -76,6 +76,27 @@ describe('ClienteApi.poll', () => {
         await expect(api.poll()).rejects.toThrow(/401/)
     })
 
+    it('NUNCA deja el token en el mensaje de error, aunque el servidor haga eco del cuerpo', async () => {
+        // Un servidor que registra/devuelve la petición (proxy, error 400
+        // verboso, etc.) puede citar el cuerpo enviado, que incluye el
+        // token. El mensaje de error termina en el log del agente: el
+        // token no puede aparecer ahí de ninguna forma.
+        const tokenSecreto = 'secreto-super-privado-de-la-estacion'
+        globalThis.fetch = vi.fn(() =>
+            respuesta({ error: `Petición inválida: {"token":"${tokenSecreto}","version":"1.1.0"}` }, 400),
+        ) as never
+
+        const api = new ClienteApi('http://x', tokenSecreto, 25_000)
+        let mensaje = ''
+        try {
+            await api.poll()
+        } catch (e) {
+            mensaje = (e as Error).message
+        }
+        expect(mensaje).not.toContain(tokenSecreto)
+        expect(mensaje).toContain('TOKEN OCULTO')
+    })
+
     it('lanza si la respuesta no es JSON válido', async () => {
         globalThis.fetch = vi.fn(() =>
             Promise.resolve(new Response('no soy json', { status: 200 })),

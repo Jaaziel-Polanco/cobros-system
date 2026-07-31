@@ -12,11 +12,9 @@
     "test:watch": "vitest",
     "sim": "tsc && node dist/simulador-servidor.js"
   },
-  "dependencies": {
-    "iconv-lite": "^0.7.3"
-  },
   "devDependencies": {
     "@types/node": "^20",
+    "iconv-lite": "^0.7.3",
     "typescript": "^5",
     "vitest": "^3"
   }

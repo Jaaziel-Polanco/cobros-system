@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
+import { log } from './logger'
 
 /**
  * Impresión en Windows: cómo se eligió y qué se descartó
@@ -46,6 +47,15 @@ param(
     [Parameter(Mandatory=$true)][string]$DataFile
 )
 $ErrorActionPreference = 'Stop'
+
+# Por defecto PowerShell escribe la consola (incluidos los mensajes de
+# error) en la codepage OEM del sistema (p.ej. CP850 en instalaciones en
+# español), no en UTF-8. Node descodifica stdout/stderr como UTF-8 por
+# defecto: sin esto, cualquier acento en un mensaje de error llega
+# ilegible al log del agente — justo lo que necesita leer alguien que no
+# puede depurar en la propia PC de tienda.
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
+$OutputEncoding = [System.Text.Encoding]::UTF8
 
 Add-Type -TypeDefinition @"
 using System;
@@ -120,6 +130,31 @@ public class RawPrinterHelper
 
 $bytes = [System.IO.File]::ReadAllBytes($DataFile)
 [RawPrinterHelper]::EnviarCrudo($PrinterName, $bytes)
+
+# ─── Aviso, no verificación ────────────────────────────────────
+# WritePrinter devuelve éxito en cuanto el SPOOLER acepta los bytes, no
+# cuando salen del papel: con la impresora apagada, sin papel o en pausa,
+# Windows igual encola el trabajo y esto ya habrá tenido éxito. Este
+# chequeo es solo un intento adicional, de mejor esfuerzo, de detectar esa
+# situación consultando la cola de Windows justo después de imprimir. Si
+# la consulta falla o no encuentra nada raro, no cambia el resultado: se
+# sigue reportando éxito (que es la verdad que puede garantizar este
+# programa) y se limita a escribir una línea de AVISO que el agente
+# registra como advertencia.
+try {
+    Start-Sleep -Milliseconds 400
+    $filtro = "Name LIKE '" + ($PrinterName -replace "'", "''") + ",%'"
+    $trabajos = Get-CimInstance Win32_PrintJob -Filter $filtro -ErrorAction Stop
+    foreach ($t in $trabajos) {
+        if ($t.Status -and $t.Status -notin @('OK', 'Printing', 'Spooling', 'Printed')) {
+            Write-Output "AVISO: el trabajo quedo en la cola de Windows con estado '$($t.Status)' (revisa si la impresora esta encendida, con papel y sin pausar)"
+        }
+    }
+} catch {
+    # Sin PrintManagement/WMI disponible, o sin permisos para consultarlo:
+    # no es un fallo de impresión, se ignora en silencio.
+}
+
 Write-Output "OK"
 `
 
@@ -128,7 +163,20 @@ Write-Output "OK"
  * por su nombre exacto (el que aparece en «Impresoras y escáneres»).
  *
  * Igual que `imprimirRed`, RECHAZA la promesa ante cualquier fallo real o
- * timeout: nunca resuelve silenciosamente algo que no llegó al papel.
+ * timeout de la llamada a `winspool.drv` — nunca resuelve silenciosamente
+ * ante un fallo que Windows sí reportó.
+ *
+ * Con una diferencia importante frente a `imprimirRed`, que hay que tener
+ * clara: aquí "resuelve" significa que el SPOOLER de Windows aceptó los
+ * bytes, no que salieron del papel. `WritePrinter` no espera a que la
+ * impresora física termine; si está apagada, sin papel o en pausa,
+ * Windows encola el trabajo igual y esta función resuelve. Se hace un
+ * chequeo de mejor esfuerzo contra la cola de impresión justo después
+ * (ver el script embebido) que registra una advertencia si detecta algo
+ * raro, pero no es una garantía — por eso es una advertencia y no un
+ * rechazo. Ver el README, sección "Errores comunes", para cómo diagnosticar
+ * un boleto que el sistema marca como impreso pero que el cliente nunca
+ * recibió.
  */
 export function imprimirWindows(
     nombreImpresora: string,
@@ -173,7 +221,17 @@ export function imprimirWindows(
         ])
 
         let salidaError = ''
+        let salidaEstandar = ''
         proceso.stderr?.on('data', d => { salidaError += d.toString() })
+        // Hay que drenar stdout aunque solo se lea al final: un hijo cuyo
+        // stdout nadie consume se bloquea al llenar el búfer del pipe en
+        // cuanto escribe más de lo que el sistema operativo hace de
+        // colchón (unos 64 KB). Hoy el script solo emite "OK" y, como
+        // mucho, un par de líneas de AVISO, pero sin este listener
+        // cualquier salida mayor —un warning de PowerShell más largo,
+        // una versión futura del script— cuelga cada impresión hasta el
+        // timeout.
+        proceso.stdout?.on('data', d => { salidaEstandar += d.toString() })
 
         const temporizador = setTimeout(() => {
             proceso.kill()
@@ -188,6 +246,16 @@ export function imprimirWindows(
         proceso.on('close', codigo => {
             clearTimeout(temporizador)
             if (codigo === 0) {
+                // El spooler aceptó los bytes: es todo lo que este
+                // transporte puede confirmar (ver la nota en el propio
+                // script sobre por qué esto no es "salió del papel").
+                // Si el chequeo de mejor esfuerzo contra la cola de
+                // Windows detectó algo raro, se registra como advertencia
+                // — nunca como fallo, porque no es una confirmación fiable
+                // de que algo salió mal.
+                for (const linea of salidaEstandar.split(/\r?\n/)) {
+                    if (linea.startsWith('AVISO:')) log.warn(`Impresora "${nombreImpresora}": ${linea}`)
+                }
                 acabar()
             } else {
                 const detalle = salidaError.trim() || `powershell salió con código ${codigo}`

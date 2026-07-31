@@ -25,13 +25,23 @@ También necesitas saber **cómo está conectada la impresora**:
 - **Por red** (tiene su propio cable de red y una dirección IP): no hace
   falta nada más en esta PC, el sistema ya sabe la IP.
 - **Por USB** (conectada directamente a esta PC con un cable USB): la
-  impresora debe estar **instalada en Windows primero**. Ve a
+  impresora debe estar **instalada en Windows primero**, y con la MISMA
+  cuenta de usuario que va a correr el agente (ver el aviso sobre NSSM más
+  abajo — es el motivo más común de que esto falle). Ve a
   `Configuración → Bluetooth y dispositivos → Impresoras y escáneres` y
-  confirma que aparece en la lista con su nombre (por ejemplo "POS-80" o el
-  modelo). Si Windows no la reconoce como impresora (solo como "dispositivo
-  USB desconocido"), hay que instalar el driver que trae la impresora antes
-  de seguir. Anota el nombre exacto: hace falta para configurar la
-  estación en el sistema.
+  confirma que aparece en la lista. Si Windows no la reconoce como
+  impresora (solo como "dispositivo USB desconocido"), hay que instalar el
+  driver que trae la impresora antes de seguir.
+
+  Para copiar el nombre exacto sin transcribirlo a ojo (mayúsculas y
+  espacios importan), abre PowerShell y ejecuta:
+
+  ```powershell
+  Get-Printer | Select-Object Name
+  ```
+
+  Copia tal cual el valor de `Name` de la impresora correcta: es lo que
+  hay que escribir en el sistema al crear la estación.
 
 Node.js 20 o superior debe estar instalado en la PC
 (https://nodejs.org — descarga la versión "LTS").
@@ -47,7 +57,7 @@ Node.js 20 o superior debe estar instalado en la PC
    npm run build
    ```
 
-3. Copia el archivo `.env.example` y renómbralo a `.env`. Ábrelo con el
+3. Copia el archivo `env.example` y renómbralo a `.env`. Ábrelo con el
    Bloc de notas y completa:
 
    ```env
@@ -91,30 +101,78 @@ sucursal, instálalo como servicio de Windows con **NSSM**
    C:\nssm\nssm.exe install AgenteImpresionBoletos
    ```
 
-3. Se abre una ventana. Completa:
-   - **Path:** la ruta a `node.exe` (normalmente
-     `C:\Program Files\nodejs\node.exe`)
-   - **Startup directory:** la carpeta del agente, por ejemplo
-     `C:\agente-impresion`
-   - **Arguments:** `dist\index.js`
+3. Se abre una ventana con varias pestañas. Completa:
+   - **Pestaña "Application":**
+     - **Path:** la ruta a `node.exe` (normalmente
+       `C:\Program Files\nodejs\node.exe`)
+     - **Startup directory:** la carpeta del agente, por ejemplo
+       `C:\agente-impresion`
+     - **Arguments:** `dist\index.js`
+   - **Pestaña "Log on":** ⚠️ **importante, es el fallo de instalación más
+     común.** Por defecto NSSM corre el servicio como "Local System", una
+     cuenta que **no ve las impresoras instaladas para un usuario
+     normal**. Si la impresora se instaló mientras estabas conectado como
+     el usuario de la caja, elige aquí **"This account"** y pon ese mismo
+     usuario y su contraseña de Windows. Si te equivocas en este paso, el
+     servicio arranca, pero cada intento de imprimir en una estación
+     `windows` falla con "no se pudo abrir la impresora" sin que se vea
+     por qué — la impresora existe, solo que para otra cuenta.
+   - **Pestaña "I/O":** en **"Output (stdout)"** y **"Error (stderr)"**
+     escribe una ruta de archivo, por ejemplo
+     `C:\agente-impresion\nssm-salida.log` y
+     `C:\agente-impresion\nssm-errores.log`. El agente ya escribe su
+     propio `agente.log`, pero esto captura cualquier fallo de arranque
+     que ocurra ANTES de que el agente llegue a inicializar su propio
+     registro (una ruta mal escrita, Node no encontrado, etc.).
+   - **Pestaña "Exit actions":** en **"Restart action"** deja "Restart
+     application" y en el intervalo pon algo como 5 segundos (5000 ms). Así,
+     si el agente se cae por cualquier motivo, Windows lo vuelve a
+     levantar solo, sin que nadie en la tienda tenga que hacer nada.
 4. Clic en "Install service".
 5. Arráncalo desde `Servicios de Windows` (buscar "Servicios" en el menú
    inicio) → busca "AgenteImpresionBoletos" → botón derecho → Iniciar. Marca
    el tipo de inicio como "Automático" para que arranque solo con la PC.
 
-Si algo falla, los registros quedan en `agente.log`, dentro de la misma
-carpeta del agente.
+Si algo falla, revisa primero `agente.log` (dentro de la carpeta del
+agente) y, si el servicio ni siquiera llegó a arrancar, los archivos que
+configuraste en la pestaña "I/O".
 
 ## 4. Qué hace cada tipo de conexión
 
 | Tipo | Cómo llegan los bytes a la impresora |
 |---|---|
 | `red` | El agente abre una conexión directa (TCP) a la IP y puerto de la impresora. |
-| `windows` | El agente le pide a Windows que se los mande, tal cual, a la impresora instalada con ese nombre (sin que el driver los interprete como texto). |
+| `windows` | El agente le pide al spooler de Windows que se los mande, tal cual, a la impresora instalada con ese nombre (sin que el driver los interprete como texto). |
 
 El tipo lo elige un administrador al crear la estación en el sistema; el
 agente no necesita configuración extra para uno u otro, salvo que la
-impresora `windows` esté correctamente instalada en esta PC (paso 1).
+impresora `windows` esté correctamente instalada en esta PC (paso 1) y el
+servicio corra con la cuenta correcta (paso 3).
+
+### Qué significa realmente "impreso" en cada tipo
+
+Esto es importante y las dos conexiones NO garantizan lo mismo:
+
+- **`red`:** el agente abre el socket, escribe los bytes y espera a que la
+  impresora confirme la conexión. Si algo falla —apagada, sin red, no
+  responde— el agente lo detecta y el boleto queda en `error`, nunca en
+  `impreso`.
+- **`windows`:** el agente le entrega los bytes al **spooler** de
+  Windows, y eso es lo único que puede confirmar. El spooler acepta el
+  trabajo aunque la impresora esté apagada, sin papel o en pausa — en esos
+  casos el trabajo se queda esperando en la cola de Windows y el sistema
+  igual lo marca como `impreso`, porque desde el punto de vista del
+  agente, técnicamente lo está: llegó a donde el agente puede llegar.
+
+  **Si un boleto figura como impreso en el sistema pero el cliente nunca
+  lo recibió, y la estación es de tipo `windows`, revisa la cola de
+  impresión de Windows** (`Configuración → Impresoras y escáneres → [la
+  impresora] → Abrir cola`). Lo más probable es encontrar el trabajo ahí
+  atascado, con la impresora apagada, sin papel o en pausa. El agente
+  intenta avisar de esto por su cuenta —si detecta un trabajo así en la
+  cola justo después de imprimir, escribe una línea `AVISO:` en
+  `agente.log`— pero es un chequeo de mejor esfuerzo, no una garantía:
+  no sustituye una revisión manual si algo no cuadra.
 
 ## 5. Errores comunes
 
@@ -126,13 +184,16 @@ impresora `windows` esté correctamente instalada en esta PC (paso 1).
   nuevo.
 - **Trabajo marcado "error" en el sistema con un mensaje de impresora**:
   revisa que la impresora esté encendida, con papel y, si es de red, que
-  esté en la misma red que esta PC. Ningún boleto queda marcado como
-  "impreso" si no llegó de verdad al papel — si ves "error", puedes confiar
-  en que no salió, y basta con reimprimirlo desde el sistema una vez
-  resuelto el problema.
-- **Impresora `windows` no imprime nada y no da error claro**: comprueba en
-  `Impresoras y escáneres` que el nombre configurado en el sistema coincide
-  EXACTO (mayúsculas, espacios) con el nombre de Windows.
+  esté en la misma red que esta PC.
+- **Trabajo marcado "impreso" pero el boleto no salió (solo en tipo
+  `windows`)**: ver el apartado anterior — revisa la cola de impresión de
+  Windows.
+- **Impresora `windows` no imprime nada y da "no se pudo abrir la
+  impresora"**: lo más común es que el servicio esté corriendo con una
+  cuenta de Windows distinta de la que tiene la impresora instalada (ver
+  la pestaña "Log on" de NSSM, arriba). Lo segundo más común es que el
+  nombre configurado en el sistema no coincida EXACTO (mayúsculas,
+  espacios) con el que muestra `Get-Printer`.
 
 ## 6. Simulador (solo para quien desarrolla el sistema)
 

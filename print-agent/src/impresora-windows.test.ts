@@ -13,9 +13,11 @@ vi.mock('node:child_process', () => ({
 function procesoFalso() {
     const proceso = new EventEmitter() as EventEmitter & {
         stderr: EventEmitter
+        stdout: EventEmitter
         kill: () => void
     }
     proceso.stderr = new EventEmitter()
+    proceso.stdout = new EventEmitter()
     proceso.kill = vi.fn()
     return proceso
 }
@@ -75,6 +77,38 @@ describe('imprimirWindows', () => {
         setImmediate(() => proceso.emit('error', new Error('ENOENT')))
 
         await expect(promesa).rejects.toThrow(/POS-80/)
+    })
+
+    it('resuelve (no rechaza) cuando el script solo deja un AVISO de la cola de Windows', async () => {
+        // WritePrinter ya tuvo éxito: el spooler aceptó los bytes. Un
+        // AVISO es información de mejor esfuerzo, no una confirmación de
+        // fallo — por eso esto debe resolver, no rechazar.
+        const proceso = procesoFalso()
+        spawnMock.mockReturnValue(proceso)
+
+        const { imprimirWindows } = await import('./impresora-windows')
+        const promesa = imprimirWindows('POS-80', Buffer.from([0x41]))
+        setImmediate(() => {
+            proceso.stdout.emit('data', Buffer.from("AVISO: el trabajo quedo en la cola de Windows con estado 'Error'\nOK\n"))
+            proceso.emit('close', 0)
+        })
+
+        await expect(promesa).resolves.toBeUndefined()
+    })
+
+    it('drena stdout sin colgarse aunque el script escriba mucho', async () => {
+        const proceso = procesoFalso()
+        spawnMock.mockReturnValue(proceso)
+
+        const { imprimirWindows } = await import('./impresora-windows')
+        const promesa = imprimirWindows('POS-80', Buffer.from([0x41]), 500)
+        const salidaLarga = Buffer.from('x'.repeat(200_000))
+        setImmediate(() => {
+            proceso.stdout.emit('data', salidaLarga)
+            proceso.emit('close', 0)
+        })
+
+        await expect(promesa).resolves.toBeUndefined()
     })
 
     it('RECHAZA por timeout cuando powershell se cuelga sin responder', async () => {

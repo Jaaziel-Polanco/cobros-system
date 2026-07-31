@@ -34,6 +34,22 @@ export class ClienteApi {
         private readonly pollEsperaMs: number,
     ) {}
 
+    /**
+     * Quita el token de cualquier texto antes de que pueda llegar a un
+     * `Error.message` y, de ahí, al archivo de registro.
+     *
+     * No hay que confiar en que el servidor nunca haga eco de lo que se le
+     * envió: si alguna vez lo hace (un proxy que registra y devuelve el
+     * cuerpo, un error 400 que cita la petición, etc.), el cuerpo de la
+     * respuesta puede contener el token tal cual. Sanear aquí, en el único
+     * punto por el que pasa toda respuesta, es la única garantía real de
+     * que el token de la estación nunca queda en texto plano en
+     * `agente.log`, en una PC de tienda.
+     */
+    private sanear(texto: string): string {
+        return this.token ? texto.split(this.token).join('[TOKEN OCULTO]') : texto
+    }
+
     private async post<T>(ruta: string, cuerpo: object, timeoutMs: number): Promise<T> {
         const controlador = new AbortController()
         const temporizador = setTimeout(() => controlador.abort(), timeoutMs)
@@ -48,7 +64,7 @@ export class ClienteApi {
 
             if (!resp.ok) {
                 const texto = await resp.text().catch(() => '')
-                throw new Error(`${ruta} respondió ${resp.status}: ${texto.slice(0, 200)}`)
+                throw new Error(`${ruta} respondió ${resp.status}: ${this.sanear(texto.slice(0, 200))}`)
             }
 
             return await resp.json() as T

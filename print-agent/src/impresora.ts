@@ -1,6 +1,5 @@
 import { imprimirRed } from './impresora-red'
 import { imprimirWindows } from './impresora-windows'
-import { volcarASimulador } from './simulador-archivo'
 import type { DestinoImpresora } from './tipos'
 
 /**
@@ -13,13 +12,23 @@ import type { DestinoImpresora } from './tipos'
  * Con `modoSimulador === 'archivo'` no se toca ni la red ni el spooler: los
  * bytes se vuelcan a un archivo y su interpretación se imprime en consola.
  * Es el modo que se usa para desarrollar sin impresora física.
+ *
+ * El módulo del simulador (`simulador-archivo` -> `interprete-escpos`) se
+ * importa de forma dinámica, solo cuando `modoSimulador` está activo. Es lo
+ * único del paquete que depende de `iconv-lite`, y es una herramienta de
+ * desarrollo: una PC de sucursal no debería tener que cargar ese módulo
+ * — ni depender de que `iconv-lite` esté instalado — solo para imprimir de
+ * verdad. Con el `import()` perezoso, si algún día `iconv-lite` se instala
+ * solo como dependencia de desarrollo, el camino de producción (red y
+ * Windows) sigue funcionando sin tocarlo.
  */
-export function imprimir(
+export async function imprimir(
     destino: DestinoImpresora,
     bytes: Buffer,
     modoSimulador: '' | 'archivo' = '',
 ): Promise<void> {
     if (modoSimulador === 'archivo') {
+        const { volcarASimulador } = await import('./simulador-archivo')
         return volcarASimulador(destino, bytes)
     }
 
