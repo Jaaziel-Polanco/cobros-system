@@ -59,10 +59,13 @@ interface CuentasViewProps {
     puedeVerTickets?: boolean
     /** Estado de la estación de impresión del usuario actual (Tarea 5). */
     estacion?: { sucursalNombre: string; enLinea: boolean } | null
+    /** Permiso `imprimir_ticket`, reenviado tal cual a `TicketConfirmDialog`. */
+    puedeImprimir?: boolean
 }
 
 export function CuentasView({
     deudas, clientes, agentes, puedeVerTickets = false, estacion = null,
+    puedeImprimir = false,
 }: CuentasViewProps) {
     const [search, setSearch] = useState('')
     const [etapaFilter, setEtapaFilter] = useState('')
@@ -398,6 +401,7 @@ export function CuentasView({
                     clienteNombre={ticketDialog?.nombre ?? ''}
                     clienteTelefono={ticketDialog?.telefono ?? null}
                     estacion={estacion}
+                    puedeImprimir={puedeImprimir}
                 />
             )}
         </>

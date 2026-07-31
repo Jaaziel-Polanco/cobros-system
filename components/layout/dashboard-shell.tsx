@@ -36,6 +36,9 @@ export function DashboardShell({
     // I8: el panel flotante no debe ofrecer el modal de boleto a quien no
     // tiene ver_tickets -- solo puede fallar.
     const puedeVerTickets = getPermisos(profile).ver_tickets
+    // Igual que puedeVerTickets: sin imprimir_ticket, el botón de imprimir
+    // del modal no debe aparecer -- solo puede fallar al pulsarlo.
+    const puedeImprimir = getPermisos(profile).imprimir_ticket
 
     return (
         <div className="flex h-screen overflow-hidden" style={{ background: '#0a1628' }}>
@@ -75,6 +78,7 @@ export function DashboardShell({
                             deudasPendientes={deudasPendientes}
                             puedeVerTickets={puedeVerTickets}
                             estacion={estacion}
+                            puedeImprimir={puedeImprimir}
                         />
                     )}
                 </div>

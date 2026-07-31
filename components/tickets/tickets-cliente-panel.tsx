@@ -38,11 +38,20 @@ interface Props {
      *  generar_ticket_manual se le ocultaría el aviso y sus boletos pendientes
      *  se perderían en silencio. No lo colapses en un solo booleano. */
     puedeEmitirDePago: boolean
+    /** Permiso `imprimir_ticket`. Sin él, el botón de imprimir no aparece
+     *  (mismo patrón que `puedeGenerar`/`puedeEmitirDePago`: gateo por
+     *  permiso, no por el resultado de intentarlo). */
+    puedeImprimir?: boolean
+    /** Estado de la estación de impresión del usuario actual. Con
+     *  `estacion: null` (sin sucursal asignada) el botón se deshabilita en
+     *  vez de dejar que el usuario descubra el bloqueo al pulsar — igual
+     *  que en el diálogo de confirmación de pago. */
+    estacion?: { sucursalNombre: string; enLinea: boolean } | null
 }
 
 export function TicketsClientePanel({
     clienteId, clienteNombre, tieneTelefono, tickets, pagosSinTicket, puedeGenerar,
-    puedeEmitirDePago,
+    puedeEmitirDePago, puedeImprimir = false, estacion = null,
 }: Props) {
     const [manualAbierto, setManualAbierto] = useState(false)
     const [pendiente, startTransition] = useTransition()
@@ -72,8 +81,8 @@ export function TicketsClientePanel({
     const reimprimir = (ticketId: string) => {
         startTransition(async () => {
             try {
-                await imprimirTicket(ticketId)
-                toast.success('Enviado a la impresora')
+                const { nuevo } = await imprimirTicket(ticketId)
+                toast.success(nuevo ? 'Enviado a la impresora' : 'Ya estaba en la cola de impresión')
             } catch (e: unknown) {
                 toast.error(e instanceof Error ? e.message : 'Error')
             }
@@ -189,14 +198,16 @@ export function TicketsClientePanel({
                                         >
                                             <Send className="h-3.5 w-3.5" />
                                         </button>
-                                        <button
-                                            title="Imprimir"
-                                            disabled={pendiente}
-                                            onClick={() => reimprimir(t.id)}
-                                            className="rounded p-1.5 text-slate-400 hover:bg-white/5 hover:text-[#5bbfed] disabled:opacity-30"
-                                        >
-                                            <Printer className="h-3.5 w-3.5" />
-                                        </button>
+                                        {puedeImprimir && (
+                                            <button
+                                                title={estacion ? 'Imprimir' : 'Tu usuario no tiene sucursal asignada'}
+                                                disabled={pendiente || !estacion}
+                                                onClick={() => reimprimir(t.id)}
+                                                className="rounded p-1.5 text-slate-400 hover:bg-white/5 hover:text-[#5bbfed] disabled:opacity-30"
+                                            >
+                                                <Printer className="h-3.5 w-3.5" />
+                                            </button>
+                                        )}
                                         {puedeGenerar && (
                                             <button
                                                 title="Anular boleto"

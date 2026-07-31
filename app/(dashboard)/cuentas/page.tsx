@@ -28,7 +28,8 @@ export default async function CuentasPage() {
         .eq('id', user!.id)
         .single()
     const puedeVerTickets = perfil ? getPermisos(perfil).ver_tickets : false
-    const estacion = await getEstadoEstacionDeUsuario()
+    const puedeImprimir = perfil ? getPermisos(perfil).imprimir_ticket : false
+    const estacion = puedeImprimir ? await getEstadoEstacionDeUsuario() : null
 
     return (
         <div className="p-4 sm:p-6 space-y-6">
@@ -41,6 +42,7 @@ export default async function CuentasPage() {
                 agentes={(agentes ?? []) as any as Profile[]}
                 puedeVerTickets={puedeVerTickets}
                 estacion={estacion}
+                puedeImprimir={puedeImprimir}
             />
         </div>
     )

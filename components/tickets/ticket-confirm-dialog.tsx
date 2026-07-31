@@ -18,6 +18,10 @@ interface Props {
     clienteNombre: string
     clienteTelefono: string | null
     estacion?: { sucursalNombre: string; enLinea: boolean } | null
+    /** Permiso `imprimir_ticket`. Sin él, el botón de imprimir no aparece —
+     *  igual que el resto de acciones de boletos se gatean por permiso en
+     *  vez de dejar que el usuario descubra el bloqueo al pulsar. */
+    puedeImprimir?: boolean
 }
 
 function telefonoValido(t: string | null): boolean {
@@ -26,16 +30,19 @@ function telefonoValido(t: string | null): boolean {
 
 export function TicketConfirmDialog({
     abierto, onCerrar, pagoId, clienteNombre, clienteTelefono, estacion = null,
+    puedeImprimir = false,
 }: Props) {
     const [pendiente, startTransition] = useTransition()
     const [emitido, setEmitido] = useState<Ticket | null>(null)
     const [envioError, setEnvioError] = useState<string | null>(null)
+    const [imprimirError, setImprimirError] = useState<string | null>(null)
 
     const hayTelefono = telefonoValido(clienteTelefono)
 
     const cerrar = () => {
         setEmitido(null)
         setEnvioError(null)
+        setImprimirError(null)
         onCerrar()
     }
 
@@ -57,6 +64,7 @@ export function TicketConfirmDialog({
                 ticket = res.ticket
                 setEmitido(ticket)
                 setEnvioError(null)
+                setImprimirError(null)
 
                 toast.success(
                     res.yaExistia
@@ -83,11 +91,17 @@ export function TicketConfirmDialog({
                 }
             } else if (via === 'imprimir') {
                 try {
-                    await imprimirTicket(ticket.id)
-                    toast.success('Boleto enviado a la impresora')
+                    const { nuevo } = await imprimirTicket(ticket.id)
+                    setImprimirError(null)
+                    toast.success(
+                        nuevo
+                            ? 'Boleto enviado a la impresora'
+                            : 'El boleto ya estaba en la cola de impresión',
+                    )
                     cerrar()
                 } catch (e: unknown) {
                     const motivo = e instanceof Error ? e.message : 'Error desconocido'
+                    setImprimirError(motivo)
                     toast.error(
                         `Boleto ${ticket.numero_formateado} generado, pero no se pudo enviar a imprimir: ${motivo}`,
                     )
@@ -111,6 +125,31 @@ export function TicketConfirmDialog({
                 const motivo = e instanceof Error ? e.message : 'Error desconocido'
                 setEnvioError(motivo)
                 toast.error(`No se pudo enviar por WhatsApp: ${motivo}`)
+            }
+        })
+    }
+
+    // Reintento de solo-impresión, con la misma forma que reintentarEnvio:
+    // no vuelve a emitir, solo reintenta encolar contra el boleto que ya
+    // existe. imprimirTicket es idempotente frente a doble clic (dedup por
+    // ticket_id + estado pendiente/reclamado), así que reintentar aquí
+    // nunca duplica un trabajo que siga esperando en la cola.
+    const reintentarImpresion = () => {
+        if (!emitido) return
+        startTransition(async () => {
+            try {
+                const { nuevo } = await imprimirTicket(emitido.id)
+                setImprimirError(null)
+                toast.success(
+                    nuevo
+                        ? 'Boleto enviado a la impresora'
+                        : 'El boleto ya estaba en la cola de impresión',
+                )
+                cerrar()
+            } catch (e: unknown) {
+                const motivo = e instanceof Error ? e.message : 'Error desconocido'
+                setImprimirError(motivo)
+                toast.error(`No se pudo enviar a imprimir: ${motivo}`)
             }
         })
     }
@@ -153,6 +192,13 @@ export function TicketConfirmDialog({
                     </p>
                 )}
 
+                {emitido && imprimirError && (
+                    <p className="rounded-lg bg-red-500/15 px-3 py-2 text-xs text-red-300">
+                        El boleto <strong>{emitido.numero_formateado}</strong> se generó, pero no
+                        se pudo enviar a imprimir: {imprimirError}
+                    </p>
+                )}
+
                 <div className="space-y-2">
                     <Button
                         className="w-full justify-start gap-2"
@@ -176,25 +222,39 @@ export function TicketConfirmDialog({
                         </Button>
                     )}
 
-                    <Button
-                        variant="outline"
-                        className="w-full justify-start gap-2"
-                        disabled={pendiente || !estacion || !!emitido}
-                        onClick={() => emitir('imprimir')}
-                    >
-                        <Printer className="h-4 w-4" />
-                        Generar e imprimir
-                        {estacion ? (
-                            <span className="ml-auto flex items-center gap-1.5 text-[10px]">
-                                <span className={`h-1.5 w-1.5 rounded-full ${estacion.enLinea ? 'bg-green-400' : 'bg-slate-600'}`} />
-                                {estacion.sucursalNombre}
-                            </span>
-                        ) : (
-                            <span className="ml-auto text-[10px] text-slate-500">
-                                Sin sucursal
-                            </span>
-                        )}
-                    </Button>
+                    {puedeImprimir && (
+                        <Button
+                            variant="outline"
+                            className="w-full justify-start gap-2"
+                            disabled={pendiente || !estacion || !!emitido}
+                            onClick={() => emitir('imprimir')}
+                        >
+                            <Printer className="h-4 w-4" />
+                            Generar e imprimir
+                            {estacion ? (
+                                <span className="ml-auto flex items-center gap-1.5 text-[10px]">
+                                    <span className={`h-1.5 w-1.5 rounded-full ${estacion.enLinea ? 'bg-green-400' : 'bg-slate-600'}`} />
+                                    {estacion.sucursalNombre}
+                                </span>
+                            ) : (
+                                <span className="ml-auto text-[10px] text-slate-500">
+                                    Sin sucursal
+                                </span>
+                            )}
+                        </Button>
+                    )}
+
+                    {puedeImprimir && emitido && imprimirError && estacion && (
+                        <Button
+                            variant="outline"
+                            className="w-full justify-start gap-2"
+                            disabled={pendiente}
+                            onClick={reintentarImpresion}
+                        >
+                            <Printer className="h-4 w-4" />
+                            Reintentar impresión
+                        </Button>
+                    )}
 
                     <Button
                         variant="outline"
@@ -229,7 +289,7 @@ export function TicketConfirmDialog({
                     </Button>
                 </div>
 
-                {estacion && !estacion.enLinea && (
+                {puedeImprimir && estacion && !estacion.enLinea && (
                     <p className="rounded-lg bg-amber-500/15 px-3 py-2 text-xs text-amber-300">
                         La impresora de {estacion.sucursalNombre} no está conectada ahora
                         mismo. El boleto quedará en cola y se imprimirá cuando vuelva.

@@ -53,11 +53,18 @@ export async function getEstadoEstacionDeUsuario(): Promise<{
  * Los bytes ESC/POS se construyen AQUÍ, en el servidor: el agente local no
  * conoce el formato, así que cambiar el diseño de la tirilla no obliga a
  * actualizar ninguna PC de sucursal.
+ *
+ * Idempotente frente a doble clic / doble tap: si ya hay un trabajo
+ * `pendiente` o `reclamado` para este mismo boleto, no se encola otro — se
+ * devuelve el existente. Una reimpresión legítima sí se encola, pero solo
+ * cuando el trabajo anterior ya terminó (`impreso`, `error` o `cancelado`);
+ * nunca puede haber dos impresiones del mismo boleto esperando a la vez, o
+ * saldrían dos boletos físicos idénticos del papel.
  */
 export async function imprimirTicket(
     ticketId: string,
     opciones?: { esCopia?: boolean },
-): Promise<{ jobId: string }> {
+): Promise<{ jobId: string; nuevo: boolean }> {
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) throw new Error('No autenticado')
@@ -92,6 +99,22 @@ export async function imprimirTicket(
     const ticket = ticketData as Ticket
     if (ticket.estado === 'anulado') throw new Error('El boleto está anulado')
 
+    // Deduplicación: si ya hay un trabajo esperando (pendiente o reclamado
+    // por un agente, aún no confirmado) para este boleto, se reutiliza en
+    // vez de encolar otro. No hay ninguna forma de deshacer un corte de
+    // papel ya hecho, así que esta comprobación va antes de construir nada.
+    const { data: jobExistente } = await supabase
+        .from('print_jobs')
+        .select('id')
+        .eq('ticket_id', ticket.id)
+        .in('estado', ['pendiente', 'reclamado'])
+        .limit(1)
+        .maybeSingle()
+
+    if (jobExistente) {
+        return { jobId: jobExistente.id, nuevo: false }
+    }
+
     // La primera impresión no lleva marca; las siguientes sí.
     const esCopia = opciones?.esCopia ?? ticket.veces_impreso > 0
 
@@ -123,7 +146,7 @@ export async function imprimirTicket(
     revalidatePath(`/clientes/${ticket.cliente_id}`)
     revalidatePath('/tickets')
 
-    return { jobId: job.id }
+    return { jobId: job.id, nuevo: true }
 }
 
 /**

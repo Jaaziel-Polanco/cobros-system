@@ -37,6 +37,8 @@ interface PagosPendientesPanelProps {
     puedeVerTickets?: boolean
     /** Estado de la estación de impresión del usuario actual (Tarea 5). */
     estacion?: { sucursalNombre: string; enLinea: boolean } | null
+    /** Permiso `imprimir_ticket`, reenviado tal cual a `TicketConfirmDialog`. */
+    puedeImprimir?: boolean
 }
 
 function getPeriodoActual(deuda: DeudaPendiente): string {
@@ -74,7 +76,7 @@ const URGENCIA_CONFIG = {
 }
 
 export function PagosPendientesPanel({
-    deudasPendientes, puedeVerTickets = false, estacion = null,
+    deudasPendientes, puedeVerTickets = false, estacion = null, puedeImprimir = false,
 }: PagosPendientesPanelProps) {
     const [expanded, setExpanded] = useState(false)
     const [isPending, startTransition] = useTransition()
@@ -239,6 +241,7 @@ export function PagosPendientesPanel({
                     clienteNombre={ticketDialog?.nombre ?? ''}
                     clienteTelefono={ticketDialog?.telefono ?? null}
                     estacion={estacion}
+                    puedeImprimir={puedeImprimir}
                 />
             )}
         </div>

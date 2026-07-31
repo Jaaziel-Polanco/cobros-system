@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils'
 import { getTicketsCliente, getPagosSinTicket } from '@/lib/actions/tickets'
 import { getPermisos } from '@/lib/utils/permisos'
 import { TicketsClientePanel } from '@/components/tickets/tickets-cliente-panel'
+import { getEstadoEstacionDeUsuario } from '@/lib/actions/impresion'
 
 const ETAPA_CSS: Record<string, string> = {
     preventivo: 'bg-green-500/20 text-green-300',
@@ -67,6 +68,7 @@ export default async function ClienteDetailPage({ params }: { params: Promise<{ 
 
     const tickets = permisos.ver_tickets ? await getTicketsCliente(id) : []
     const pagosSinTicket = permisos.ver_tickets ? await getPagosSinTicket(id) : []
+    const estacion = permisos.imprimir_ticket ? await getEstadoEstacionDeUsuario() : null
 
     const deudaActiva = cliente.deudas?.find((d: { estado: string }) => d.estado === 'activo')
 
@@ -212,6 +214,8 @@ export default async function ClienteDetailPage({ params }: { params: Promise<{ 
                             pagosSinTicket={pagosSinTicket}
                             puedeGenerar={permisos.generar_ticket_manual}
                             puedeEmitirDePago={permisos.ver_tickets}
+                            puedeImprimir={permisos.imprimir_ticket}
+                            estacion={estacion}
                         />
                     )}
 
