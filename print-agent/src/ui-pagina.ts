@@ -385,10 +385,24 @@ function rellenarFormulario(e) {
   document.getElementById("POLL_ESPERA_MS").value = e.config.POLL_ESPERA_MS;
 }
 
+// Un sondeo suelto puede fallar sin que pase nada: la pestaña que despierta
+// tras estar en segundo plano, el PC que vuelve de suspensión, una pausa del
+// navegador. Esta pestaña se queda abierta días en un mostrador, así que
+// gritar "el agente murió" al primer tropiezo enseña a la gente a ignorar el
+// cartel rojo — y entonces el rojo deja de servir el día que es de verdad.
+// Se exigen SONDEOS_FALLIDOS_PARA_ALARMA seguidos (unos 9 s) antes de avisar.
+var SONDEOS_FALLIDOS_PARA_ALARMA = 3;
+var sondeosFallidos = 0;
+
 function refrescarEstado() {
   return pedir("/api/estado").then(function (e) {
-    if (!e.error) pintarEstado(e);
+    if (!e.error) {
+      sondeosFallidos = 0;
+      pintarEstado(e);
+    }
   }).catch(function () {
+    sondeosFallidos++;
+    if (sondeosFallidos < SONDEOS_FALLIDOS_PARA_ALARMA) return;
     document.getElementById("veredicto").className = "veredicto mal";
     document.getElementById("veredicto").innerHTML =
       "<span>El agente dejó de responder. ¿Se cerró la ventana donde estaba corriendo?</span>";
