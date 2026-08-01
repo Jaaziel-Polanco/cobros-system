@@ -264,3 +264,83 @@ export function imprimirWindows(
         })
     })
 }
+
+/**
+ * Script que lista las impresoras instaladas PARA LA CUENTA que corre este
+ * proceso. Ese matiz es el que hace útil la lista: el fallo de instalación
+ * más común es un servicio NSSM corriendo como "Local System", que no ve
+ * las impresoras del usuario de la caja (ver el README). Preguntándoselo a
+ * la misma cuenta que va a imprimir, lo que se enseña es exactamente lo que
+ * el agente puede usar, no lo que se ve al abrir "Impresoras y escáneres"
+ * con otra sesión.
+ *
+ * `Get-Printer` primero (es el cmdlet moderno) y `Win32_Printer` por WMI si
+ * no está el módulo PrintManagement, que falta en algunas ediciones e
+ * instalaciones recortadas de Windows.
+ */
+const SCRIPT_LISTAR = `
+$ErrorActionPreference = 'Stop'
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
+$nombres = @()
+try {
+    $nombres = @(Get-Printer -ErrorAction Stop | Select-Object -ExpandProperty Name)
+} catch {
+    $nombres = @(Get-CimInstance Win32_Printer -ErrorAction Stop | Select-Object -ExpandProperty Name)
+}
+foreach ($n in $nombres) { Write-Output $n }
+`.trim()
+
+/**
+ * Nombres de las impresoras instaladas en este PC, tal cual los ve Windows.
+ *
+ * Existe para un caso concreto y muy repetido: el servidor manda
+ * `destino.nombre` y el agente no lo elige, así que cuando esa impresora no
+ * existe aquí, decir "no se pudo abrir la impresora" no ayuda a nadie. Ver
+ * al lado que el servidor pide `POS` y que en este PC se llama `POS-58`
+ * resuelve el problema en un vistazo.
+ *
+ * Rechaza si no se pudo consultar; nunca devuelve una lista vacía para
+ * disimular un fallo, porque "no hay impresoras" y "no se pudo preguntar"
+ * llevan a acciones distintas.
+ */
+export function listarImpresorasWindows(timeoutMs = 12_000): Promise<string[]> {
+    return new Promise((resolver, rechazar) => {
+        let terminado = false
+        const acabar = (err: Error | null, nombres?: string[]) => {
+            if (terminado) return
+            terminado = true
+            clearTimeout(temporizador)
+            if (err) rechazar(err)
+            else resolver(nombres ?? [])
+        }
+
+        const proceso = spawn('powershell.exe', [
+            '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+            '-Command', SCRIPT_LISTAR,
+        ])
+
+        let salida = ''
+        let salidaError = ''
+        proceso.stdout?.on('data', d => { salida += d.toString() })
+        proceso.stderr?.on('data', d => { salidaError += d.toString() })
+
+        const temporizador = setTimeout(() => {
+            proceso.kill()
+            acabar(new Error(`Windows tardó más de ${timeoutMs / 1000} s en dar la lista de impresoras`))
+        }, timeoutMs)
+
+        proceso.on('error', err => {
+            acabar(new Error(`No se pudo ejecutar PowerShell para listar las impresoras — ${err.message}`))
+        })
+
+        proceso.on('close', codigo => {
+            if (codigo !== 0) {
+                acabar(new Error(
+                    `Windows no devolvió la lista de impresoras — ${salidaError.trim() || `powershell salió con código ${codigo}`}`,
+                ))
+                return
+            }
+            acabar(null, salida.split(/\r?\n/).map(l => l.trim()).filter(Boolean))
+        })
+    })
+}

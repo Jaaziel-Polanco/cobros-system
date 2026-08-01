@@ -8,7 +8,17 @@ export interface Config {
     logLevel: string
     /** '' imprime de verdad; 'archivo' activa el modo simulador sin impresora. */
     modoSimulador: '' | 'archivo'
+    /**
+     * Puerto de la interfaz local (siempre en 127.0.0.1). 0 la desactiva
+     * por completo, para quien no la quiera en la PC de la tienda.
+     */
+    uiPuerto: number
 }
+
+/** El `.env` vive junto al `dist/`, no dentro. Un único sitio que lo diga. */
+export const RUTA_ENV = path.join(__dirname, '..', '.env')
+
+export const UI_PUERTO_POR_DEFECTO = 9110
 
 /** Lector mínimo de .env: evita añadir dotenv como dependencia. */
 function cargarEnv(ruta: string): void {
@@ -24,8 +34,31 @@ function cargarEnv(ruta: string): void {
     }
 }
 
+/**
+ * Puerto de la interfaz local.
+ *
+ * Un valor inválido (una letra, un puerto fuera de rango) NO tumba el
+ * agente: se avisa y se usa el de por defecto. El agente existe para
+ * imprimir; que no se pueda leer el puerto del panel de diagnóstico no es
+ * motivo para dejar una tienda sin cobrar.
+ */
+export function resolverUiPuerto(bruto: string | undefined): { puerto: number; aviso?: string } {
+    const texto = (bruto ?? '').trim()
+    if (texto === '') return { puerto: UI_PUERTO_POR_DEFECTO }
+
+    const n = Number(texto)
+    if (!Number.isInteger(n) || n < 0 || n > 65_535) {
+        return {
+            puerto: UI_PUERTO_POR_DEFECTO,
+            aviso: `UI_PUERTO="${texto}" no es un puerto válido; se usa ${UI_PUERTO_POR_DEFECTO}. `
+                + 'Pon 0 si quieres desactivar la interfaz local.',
+        }
+    }
+    return { puerto: n }
+}
+
 export function cargarConfig(): Config {
-    cargarEnv(path.join(__dirname, '..', '.env'))
+    cargarEnv(RUTA_ENV)
 
     const apiUrl = process.env.API_URL?.replace(/\/$/, '')
     const token = process.env.ESTACION_TOKEN
@@ -46,5 +79,6 @@ export function cargarConfig(): Config {
         pollEsperaMs: Number(process.env.POLL_ESPERA_MS ?? 25_000),
         logLevel: process.env.LOG_LEVEL ?? 'info',
         modoSimulador: modo as '' | 'archivo',
+        uiPuerto: resolverUiPuerto(process.env.UI_PUERTO).puerto,
     }
 }

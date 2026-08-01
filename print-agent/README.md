@@ -137,7 +137,104 @@ Si algo falla, revisa primero `agente.log` (dentro de la carpeta del
 agente) y, si el servicio ni siquiera llegó a arrancar, los archivos que
 configuraste en la pestaña "I/O".
 
-## 4. Qué hace cada tipo de conexión
+## 4. La página de diagnóstico (interfaz local)
+
+Mientras el agente esté corriendo, abre en el navegador de esa misma PC:
+
+```
+http://127.0.0.1:9110
+```
+
+Es una página que contesta de un vistazo la única pregunta que importa en
+un mostrador: **¿puedo cobrar?** Sirve para no tener que leer `agente.log`
+cada vez que algo no sale.
+
+**Solo se ve desde esa PC.** No se puede abrir desde otra computadora de la
+tienda, ni desde el celular, ni desde la red. Es a propósito: la página dice
+a qué estación pertenece esta caja, permite cambiar el token y disparar
+impresiones, y eso no puede quedar al alcance de cualquiera que esté
+conectado al mismo wifi.
+
+Si no la quieres, pon `UI_PUERTO=0` en el `.env` y no se levanta. Si el
+puerto 9110 ya lo usa otro programa, escribe otro número en `UI_PUERTO`. En
+cualquier caso, **que la página falle nunca detiene la impresión**: el
+agente lo anota en `agente.log` y sigue trabajando.
+
+### Qué enseña
+
+**Diagnóstico.** Cuatro semáforos, cada uno con qué pasa y qué hacer:
+
+| Punto | Qué significa si está en rojo |
+|---|---|
+| Servidor de cobros | Esta PC no llega al sistema. Es red o `API_URL`. El agente reintenta solo; en cuanto vuelva, los boletos pendientes salen sin que nadie haga nada. |
+| Token de esta estación | El sistema rechaza el token. Hay que pedir uno nuevo en `Estaciones → Regenerar token`. **Cuando está en verde, dice a qué estación y sucursal pertenece:** es la forma de darse cuenta de que se instaló el token de otra tienda. |
+| Impresora | La impresora que pide el servidor no existe en esta PC (o, si es de red, no contesta). |
+| Contacto y última impresión | Cuándo fue la última vez que el servidor contestó y cuándo salió el último boleto. |
+
+El punto de la impresora es el que más ahorra tiempo. El nombre de la
+impresora **lo manda el servidor**, no se escribe en esta PC: si no
+coincide, la página **enseña la lista de las impresoras que sí están
+instaladas aquí**, para que se vea de un golpe que el sistema dice `POS` y
+en esta PC se llama `POS-58`.
+
+Ojo con un detalle que confunde: a Windows **las mayúsculas le dan igual**
+(`pos` abre la impresora `POS` y los boletos salen), pero **los espacios
+no** (`POS ` con un espacio al final falla). Por eso una diferencia de
+mayúsculas sale como aviso amarillo y no como error: no hay nada roto.
+
+**Prueba de impresión.** Un botón que manda una hoja a la impresora. Que
+salga papel es la única prueba que convence.
+
+Esa hoja **la genera el propio agente en esta PC**: no pasa por el servidor
+ni por la cola de boletos. Se hizo así para que el botón siga funcionando
+justo cuando más falta hace —con el servidor caído, con el token
+equivocado, sin red— y para que probar la impresora no deje trabajos
+sueltos en la cola del sistema. Recorre exactamente el mismo camino que un
+boleto de verdad (`winspool.drv → spooler → impresora`, o el socket TCP si
+es de red), y usa el ancho de papel y el codepage que dice el servidor, así
+que si los acentos se ven bien en la hoja de prueba, se van a ver bien en
+los boletos.
+
+Lo que esta hoja **no** comprueba es el diseño de la tirilla, que vive en el
+servidor. Para el recorrido completo de punta a punta sigue estando el botón
+**Imprimir página de prueba** de la pantalla `Estaciones`.
+
+**Actividad reciente.** Los últimos trabajos con la hora, el resultado y, si
+falló, el error tal cual lo devolvió Windows o la red. Se guarda en memoria:
+al reiniciar el agente se borra. El histórico completo está en `agente.log`.
+
+### Cambiar la configuración desde la página
+
+Al final hay un formulario que escribe el `.env` por ti, **sin borrar los
+comentarios** que ya tiene (antes de guardar deja una copia en `.env.bak`).
+
+Algunos cambios se aplican al momento y otros no:
+
+| Ajuste | ¿Hay que reiniciar el agente? |
+|---|---|
+| Detalle del registro (`LOG_LEVEL`) | No, al instante |
+| Modo simulador (`MODO_SIMULADOR`) | No, al instante |
+| Dirección del servidor (`API_URL`) | **Sí** |
+| Token de la estación (`ESTACION_TOKEN`) | **Sí** |
+| Espera al preguntar por boletos (`POLL_ESPERA_MS`) | **Sí** |
+
+Los tres últimos quedan fijados cuando el agente arranca, y con el token
+cambia además la identidad de la estación (otra sucursal, otra impresora,
+otro ancho de papel): aplicarlos en caliente obligaría a rehacer la
+conexión en mitad de una impresión. Mientras haya algo guardado que todavía
+no se aplica, la página lo avisa arriba con un cartel amarillo — y también
+si alguien editó el `.env` a mano en el Bloc de notas y se olvidó de
+reiniciar.
+
+El token **se enseña tapado** (`8V-f••••••••EdTd`) y no se puede leer desde
+la página: solo sustituir. Deja el campo en blanco para conservar el que ya
+está puesto.
+
+Si `MODO_SIMULADOR` está en `archivo`, la página lo grita en rojo arriba del
+todo. Con eso puesto no sale ni un boleto por la impresora aunque el sistema
+los dé por impresos, y en una tienda eso es un fallo silencioso.
+
+## 5. Qué hace cada tipo de conexión
 
 | Tipo | Cómo llegan los bytes a la impresora |
 |---|---|
@@ -174,7 +271,7 @@ Esto es importante y las dos conexiones NO garantizan lo mismo:
   `agente.log`— pero es un chequeo de mejor esfuerzo, no una garantía:
   no sustituye una revisión manual si algo no cuadra.
 
-## 5. Errores comunes
+## 6. Errores comunes
 
 - **"No se pudo contactar con el servidor"**: revisa que `API_URL` sea
   correcta y que esta PC tenga red hacia el servidor. El agente reintenta
@@ -195,7 +292,7 @@ Esto es importante y las dos conexiones NO garantizan lo mismo:
   nombre configurado en el sistema no coincida EXACTO (mayúsculas,
   espacios) con el que muestra `Get-Printer`.
 
-## 6. Simulador (solo para quien desarrolla el sistema)
+## 7. Simulador (solo para quien desarrolla el sistema)
 
 No hace falta para instalar el agente en una tienda. Es una herramienta
 para probar el agente sin tener una impresora física a mano:

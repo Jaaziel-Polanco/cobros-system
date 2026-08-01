@@ -1,8 +1,13 @@
-import { cargarConfig } from './config'
+import { cargarConfig, resolverUiPuerto, RUTA_ENV } from './config'
 import { configurarLog, log } from './logger'
 import { ClienteApi, calcularBackoff, VERSION_AGENTE, ErrorHttp, type RespuestaHello } from './api'
 import { imprimir } from './impresora'
 import { decodificarBase64Estricto } from './base64'
+import { iniciarUi } from './ui-servidor'
+import {
+    describirDestino, marcarFalloServidor, marcarLatido, registrarActividad,
+    registrarDestino, registrarSaludo,
+} from './estado'
 import type { DestinoImpresora, TrabajoImpresion } from './tipos'
 
 /** Piso de espera entre vueltas del bucle, siempre, sin importar el modo. */
@@ -137,7 +142,24 @@ async function main(): Promise<void> {
     if (cfg.modoSimulador === 'archivo') {
         log.warn('MODO_SIMULADOR=archivo activo: NO se imprime nada de verdad. Solo para desarrollo.')
     }
+    const avisoPuerto = resolverUiPuerto(process.env.UI_PUERTO).aviso
+    if (avisoPuerto) log.warn(avisoPuerto)
     log.info('─'.repeat(52))
+
+    /**
+     * La interfaz local se levanta ANTES del saludo y sin esperarla.
+     *
+     * Antes, porque el momento en el que más falta hace el panel de
+     * diagnóstico es precisamente cuando el saludo no pasa: servidor caído,
+     * token de la otra tienda, `API_URL` mal escrita. Si la interfaz
+     * arrancara después del `hello`, con el servidor apagado no habría
+     * página que abrir justo cuando hay que averiguar por qué.
+     *
+     * Y sin esperarla (`void`, no `await`), porque el bucle de impresión no
+     * puede depender de que un `listen` salga bien. `iniciarUi` no lanza ni
+     * rechaza nunca: si el puerto está ocupado, lo apunta y devuelve `null`.
+     */
+    void iniciarUi({ cfg, rutaEnv: RUTA_ENV })
 
     const api = new ClienteApi(cfg.apiUrl, cfg.token, cfg.pollEsperaMs)
 
@@ -148,6 +170,7 @@ async function main(): Promise<void> {
     for (;;) {
         try {
             saludo = await api.hello()
+            registrarSaludo(saludo)
             log.info(`Estación "${saludo.estacion}" · sucursal "${saludo.sucursal}"`)
             const destino = saludo.impresora
             const destinoTexto = destino.tipo_conexion === 'windows'
@@ -158,6 +181,7 @@ async function main(): Promise<void> {
         } catch (e) {
             fallos++
             const espera = calcularBackoff(fallos)
+            marcarFalloServidor((e as Error).message)
             log.error(`No se pudo contactar con el servidor: ${(e as Error).message}`)
             log.info(`Reintentando en ${espera / 1000} s...`)
             await dormir(espera)
@@ -170,6 +194,10 @@ async function main(): Promise<void> {
         try {
             const respuesta = await api.poll()
             fallos = 0
+            // El servidor contestó: eso es el latido que la interfaz local
+            // enseña como "último contacto". Es una asignación en memoria,
+            // no retrasa nada.
+            marcarLatido()
 
             const jobs = jobsValidos(respuesta.jobs)
             if (!Array.isArray(respuesta.jobs)) {
@@ -177,6 +205,8 @@ async function main(): Promise<void> {
             }
 
             const destino = resolverDestino(saludo!, respuesta.impresora)
+            registrarDestino(destino)
+            const textoDestino = describirDestino(destino)
 
             for (const job of jobs) {
                 const bytes = job.payload_escpos ? decodificarBase64Estricto(job.payload_escpos) : null
@@ -186,6 +216,11 @@ async function main(): Promise<void> {
                         ? 'El payload_escpos no es base64 válido'
                         : 'El trabajo llegó sin contenido para imprimir'
                     log.warn(`Trabajo ${job.id}: ${razon}; se descarta`)
+                    registrarActividad({
+                        id: job.id, at: new Date().toISOString(), tipo: 'boleto',
+                        resultado: 'descartado', detalle: 'Boleto sin contenido válido',
+                        destino: textoDestino, error: razon,
+                    })
                     await api.ack(job.id, false, razon).catch(err =>
                         log.error(`Tampoco se pudo reportar el trabajo ${job.id}: ${(err as Error).message}`),
                     )
@@ -193,6 +228,7 @@ async function main(): Promise<void> {
                 }
 
                 log.info(`Imprimiendo ${job.id} (${bytes.length} bytes)${job.es_copia ? ' [copia]' : ''}`)
+                const detalle = `Boleto${job.es_copia ? ' (copia)' : ''} · ${bytes.length} bytes`
 
                 try {
                     await imprimir(destino, bytes, cfg.modoSimulador)
@@ -201,11 +237,24 @@ async function main(): Promise<void> {
                     // reporta ok:false. El servidor decide si reintenta.
                     const mensaje = (e as Error).message
                     log.error(`Trabajo ${job.id} falló: ${mensaje}`)
+                    registrarActividad({
+                        id: job.id, at: new Date().toISOString(), tipo: 'boleto',
+                        resultado: 'error', detalle, destino: textoDestino, error: mensaje,
+                    })
                     await api.ack(job.id, false, mensaje).catch(err =>
                         log.error(`Tampoco se pudo reportar el fallo: ${(err as Error).message}`),
                     )
                     continue
                 }
+
+                // 'simulado', no 'impreso': con MODO_SIMULADOR puesto la
+                // impresión "sale bien" pero no hay papel. Llamarlo impreso
+                // en el panel sería mentir exactamente donde más duele.
+                registrarActividad({
+                    id: job.id, at: new Date().toISOString(), tipo: 'boleto',
+                    resultado: cfg.modoSimulador === 'archivo' ? 'simulado' : 'impreso',
+                    detalle, destino: textoDestino,
+                })
 
                 // La impresión salió bien. A partir de aquí el único ack
                 // posible es de éxito — ver confirmarImpreso().
@@ -214,6 +263,7 @@ async function main(): Promise<void> {
         } catch (e) {
             fallos++
             const espera = calcularBackoff(fallos)
+            marcarFalloServidor((e as Error).message)
             log.error(`Error consultando trabajos: ${(e as Error).message}`)
             log.debug(`Reintentando en ${espera / 1000} s`)
             await dormir(espera)
