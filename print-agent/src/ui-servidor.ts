@@ -748,6 +748,7 @@ export function iniciarUi(opciones: OpcionesUi): Promise<http.Server | null> {
             // página se vea desde cualquier otra PC de la red de la tienda.
             servidor.listen(cfg.uiPuerto, DIRECCION_LOCAL, () => {
                 log.info(`Interfaz local en http://${DIRECCION_LOCAL}:${cfg.uiPuerto} (solo desde esta PC)`)
+                log.info('Ahí se ve el diagnóstico y se pausa o reanuda el agente.')
                 terminar(servidor)
             })
         } catch (e) {

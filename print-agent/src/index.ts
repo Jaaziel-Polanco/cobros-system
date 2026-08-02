@@ -61,7 +61,11 @@ async function main(): Promise<void> {
                 ? `Windows: "${destino.nombre}"`
                 : `red ${destino.ip}:${destino.port}`
             log.info(`Impresora: ${destinoTexto} · ${saludo.ancho_cols} columnas · ${saludo.codepage}`)
-            log.info(`Pausar y reanudar el agente en http://127.0.0.1:${cfg.uiPuerto}`)
+            // La invitación a abrir la interfaz NO se escribe aquí: este bloque
+            // no sabe si el `listen` salió bien, y cuando el puerto estaba
+            // ocupado el log decía "no se pudo abrir la interfaz" y tres líneas
+            // despues mandaba a esa misma direccion — que la sirve OTRO agente.
+            // La escribe iniciarUi(), que es quien sí lo sabe.
             break
         } catch (e) {
             fallos++
