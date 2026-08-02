@@ -6,9 +6,10 @@ import path from 'node:path'
 import type { Server } from 'node:http'
 import {
     DIRECCION_LOCAL, esHostLocal, esOrigenLocal, iniciarUi, mutacionPermitida,
-    pendienteDeReinicio,
+    pendienteDeReinicio, peticionDeEstaPagina,
 } from './ui-servidor'
 import { reiniciarEstado } from './estado'
+import { estaPausado, reiniciarPausa } from './pausa'
 import type { Config } from './config'
 
 const ENV_BASE = `# La dirección del servidor
@@ -67,6 +68,7 @@ const abiertos: (Server | net.Server | null)[] = []
 
 beforeEach(() => {
     reiniciarEstado()
+    reiniciarPausa()
     carpeta = fs.mkdtempSync(path.join(os.tmpdir(), 'agente-ui-'))
     rutaEnv = path.join(carpeta, '.env')
     fs.writeFileSync(rutaEnv, ENV_BASE, 'utf8')
@@ -161,6 +163,35 @@ describe('la interfaz NUNCA se asoma fuera de esta PC', () => {
         expect(mutacionPermitida('application/json', undefined, 9110)).toBe(true)
         expect(mutacionPermitida('application/json; charset=utf-8', 'http://127.0.0.1:9110', 9110)).toBe(true)
         expect(mutacionPermitida('application/json', 'http://pagina-maliciosa.example', 9110)).toBe(false)
+    })
+
+    it('no deja que una página de fuera dispare un PowerShell con un <img>', async () => {
+        // Hay rutas GET que arrancan powershell.exe (listar impresoras,
+        // mirar la cola). Una página cualquiera de internet no podría LEER
+        // la respuesta, pero sin esto podría hacer que la PC de la tienda
+        // arranque un proceso por cada imagen que ponga en su HTML.
+        expect(peticionDeEstaPagina('cross-site')).toBe(false)
+        expect(peticionDeEstaPagina('same-site')).toBe(false)
+        expect(peticionDeEstaPagina('Cross-Site')).toBe(false)
+
+        // Y lo que sí es esta página: sus propias peticiones, y escribir la
+        // dirección a mano en la barra del navegador.
+        expect(peticionDeEstaPagina('same-origin')).toBe(true)
+        expect(peticionDeEstaPagina('none')).toBe(true)
+        // Sin la cabecera no se rechaza: un navegador viejo en la PC de una
+        // tienda se quedaría sin página, y esto es un cinturón más sobre el
+        // Host y el listen en 127.0.0.1, no la única defensa.
+        expect(peticionDeEstaPagina(undefined)).toBe(true)
+    })
+
+    it('rechaza de verdad una petición marcada como venida de otra web', async () => {
+        const cfg = configDePrueba(await puertoLibre())
+        await levantar(cfg)
+
+        const r = await fetch(`http://127.0.0.1:${cfg.uiPuerto}/api/impresoras`, {
+            headers: { 'Sec-Fetch-Site': 'cross-site' },
+        })
+        expect(r.status).toBe(403)
     })
 
     it('rechaza un POST que no venga como JSON', async () => {
@@ -293,6 +324,155 @@ describe('guardar la configuración', () => {
         })
 
         expect(fs.readFileSync(rutaEnv, 'utf8')).not.toContain('SUPABASE_SERVICE_ROLE_KEY')
+    })
+})
+
+describe('pausar y reanudar desde la página', () => {
+    async function pedirPausa(puerto: number, cuerpo: unknown) {
+        return fetch(`http://127.0.0.1:${puerto}/api/pausa`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(cuerpo),
+        })
+    }
+
+    it('pausa, lo dice en /api/estado y reanuda', async () => {
+        const cfg = configDePrueba(await puertoLibre())
+        await levantar(cfg)
+
+        expect((await (await fetch(`http://127.0.0.1:${cfg.uiPuerto}/api/estado`)).json()).pausa.pausado)
+            .toBe(false)
+
+        expect((await (await pedirPausa(cfg.uiPuerto, { pausado: true })).json()).pausa.pausado).toBe(true)
+        expect(estaPausado()).toBe(true)
+
+        // Y se ve en el estado, que es lo que refresca la página cada 3 s:
+        // el cartel tiene que salir también en una pestaña que ya estaba
+        // abierta cuando otro la pausó.
+        const estado = await (await fetch(`http://127.0.0.1:${cfg.uiPuerto}/api/estado`)).json()
+        expect(estado.pausa.pausado).toBe(true)
+        expect(estado.pausa.desde).toBeTruthy()
+
+        expect((await (await pedirPausa(cfg.uiPuerto, { pausado: false })).json()).pausa.pausado).toBe(false)
+        expect(estaPausado()).toBe(false)
+    })
+
+    it('no acepta una petición que no dice qué hacer', async () => {
+        const cfg = configDePrueba(await puertoLibre())
+        await levantar(cfg)
+
+        expect((await pedirPausa(cfg.uiPuerto, {})).status).toBe(400)
+        expect((await pedirPausa(cfg.uiPuerto, { pausado: 'si' })).status).toBe(400)
+        expect(estaPausado()).toBe(false)
+    })
+
+    it('una página de fuera no puede pausar esta caja', async () => {
+        // Pausar el agente deja una tienda sin imprimir. Es exactamente el
+        // tipo de acción que no puede quedar al alcance de un <form> de
+        // cualquier página abierta en el navegador de la caja.
+        const cfg = configDePrueba(await puertoLibre())
+        await levantar(cfg)
+
+        const r = await fetch(`http://127.0.0.1:${cfg.uiPuerto}/api/pausa`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'pausado=true',
+        })
+        expect(r.status).toBe(403)
+        expect(estaPausado()).toBe(false)
+    })
+})
+
+describe('cancelar trabajos de la cola', () => {
+    it('no cancela nada sin decir de qué impresora ni cuál trabajo', async () => {
+        // Cancelar tira papel a la basura de un boleto que el sistema ya dio
+        // por impreso: nada de "cancela lo que haya" sin decir dónde.
+        const cfg = configDePrueba(await puertoLibre())
+        await levantar(cfg)
+
+        const enviar = (cuerpo: unknown) => fetch(`http://127.0.0.1:${cfg.uiPuerto}/api/cola/cancelar`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(cuerpo),
+        })
+
+        expect((await enviar({})).status).toBe(400)
+        expect((await enviar({ id: 3 })).status).toBe(400)
+        expect((await enviar({ impresora: 'POS' })).status).toBe(400)
+        expect((await enviar({ impresora: 'POS', id: 'todos' })).status).toBe(400)
+    })
+
+    it('una página de fuera no puede vaciar la cola de esta caja', async () => {
+        // Se rechaza ANTES de llegar a hablar con Windows: si esta
+        // comprobación se rompiera, la prueba cancelaría trabajos de verdad
+        // en la impresora de quien la ejecute.
+        const cfg = configDePrueba(await puertoLibre())
+        await levantar(cfg)
+
+        const conOrigenAjeno = await fetch(`http://127.0.0.1:${cfg.uiPuerto}/api/cola/cancelar`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Origin: 'http://pagina-maliciosa.example' },
+            body: JSON.stringify({ impresora: 'POS', todos: true }),
+        })
+        expect(conOrigenAjeno.status).toBe(403)
+
+        const comoFormulario = await fetch(`http://127.0.0.1:${cfg.uiPuerto}/api/cola/cancelar`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'impresora=POS&todos=true',
+        })
+        expect(comoFormulario.status).toBe(403)
+    })
+
+    it('la cola sin decir qué impresora contesta con el motivo, no con un error feo', async () => {
+        const cfg = configDePrueba(await puertoLibre())
+        await levantar(cfg)
+
+        const r = await fetch(`http://127.0.0.1:${cfg.uiPuerto}/api/cola`)
+        expect(r.status).toBe(200)
+        const cuerpo = await r.json()
+        expect(cuerpo.trabajos).toBeNull()
+        expect(cuerpo.error).toMatch(/impresora/i)
+    })
+})
+
+describe('ver y descargar el registro', () => {
+    it('/api/registro contesta sin lanzar aunque no haya archivo', async () => {
+        const cfg = configDePrueba(await puertoLibre())
+        await levantar(cfg)
+
+        const r = await fetch(`http://127.0.0.1:${cfg.uiPuerto}/api/registro`)
+        expect(r.status).toBe(200)
+
+        const cuerpo = await r.json()
+        expect(typeof cuerpo.existe).toBe('boolean')
+        expect(Array.isArray(cuerpo.lineas)).toBe(true)
+        expect(cuerpo.ruta).toMatch(/agente\.log$/)
+    })
+
+    it('la descarga llega como archivo adjunto, no se abre en el navegador', async () => {
+        const cfg = configDePrueba(await puertoLibre())
+        await levantar(cfg)
+
+        const r = await fetch(`http://127.0.0.1:${cfg.uiPuerto}/api/registro/descargar`)
+        // El agente escribe su propio agente.log al arrancar las pruebas,
+        // así que aquí existe; si no existiera, un 404 con motivo también
+        // es una respuesta correcta y lo que NO puede pasar es que tumbe la
+        // interfaz.
+        expect([200, 404]).toContain(r.status)
+        if (r.status === 200) {
+            expect(r.headers.get('content-disposition')).toMatch(/attachment; filename="agente-.*\.log"/)
+            expect(r.headers.get('content-type')).toMatch(/text\/plain/)
+        }
+        await r.text()
+    })
+
+    it('el registro tampoco se puede leer desde fuera de esta PC', async () => {
+        const cfg = configDePrueba(await puertoLibre())
+        await levantar(cfg)
+
+        const respuesta = await peticionCruda(cfg.uiPuerto, 'pagina-maliciosa.example')
+        expect(respuesta).toContain('403')
     })
 })
 

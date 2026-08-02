@@ -1,10 +1,15 @@
+import fs from 'node:fs'
 import http from 'node:http'
-import { log, configurarLog } from './logger'
+import { log, configurarLog, RUTA_LOG } from './logger'
 import { PAGINA_HTML } from './ui-pagina'
 import { VERSION_AGENTE } from './api'
 import { ejecutarDiagnostico } from './diagnostico'
 import { construirTirillaPrueba } from './prueba-local'
 import { imprimir } from './impresora'
+import { listarImpresorasWindows } from './impresora-windows'
+import { cancelarEnColaWindows, listarColaWindows } from './cola-windows'
+import { estadoPausa, pausar, reanudar } from './pausa'
+import { LINEAS_POR_DEFECTO, leerFinalDelRegistro, nombreDeDescarga } from './registro'
 import {
     instantanea, describirDestino, destinoConocido, registrarActividad,
 } from './estado'
@@ -139,6 +144,33 @@ export function esHostLocal(host: string | undefined): boolean {
 }
 
 /**
+ * ¿La petición la disparó ESTA página, y no otra abierta en el navegador?
+ *
+ * Hace falta desde que hay rutas GET que lanzan `powershell.exe` (listar
+ * impresoras, mirar la cola). Las comprobaciones de más abajo no cubren ese
+ * caso: `mutacionPermitida` solo mira los POST, y una página cualquiera de
+ * internet puede pedir un GET a este puerto con un `<img src="...">` sin
+ * pedir permiso a nadie. No podría LEER la respuesta —de eso se encarga la
+ * política de mismo origen del navegador— pero sí podría hacer que la PC de
+ * la tienda arranque un proceso de PowerShell por cada imagen, que es
+ * justamente lo que no debe poder hacer un desconocido con la caja.
+ *
+ * `Sec-Fetch-Site` lo manda el propio navegador y una página no puede
+ * falsificarlo: dice `cross-site` cuando la petición nace en otro dominio.
+ * Cuando no viene (curl, un navegador viejo) no se rechaza: esta cabecera
+ * es un cinturón adicional sobre el `Host` y el `listen` en 127.0.0.1, no
+ * la única defensa, y bloquear por su ausencia dejaría la página inservible
+ * en la PC vieja de una tienda.
+ */
+export function peticionDeEstaPagina(secFetchSite: string | undefined): boolean {
+    if (!secFetchSite) return true
+    const valor = secFetchSite.toLowerCase()
+    // 'none' es escribir la dirección a mano o un marcador: eso es esta
+    // página. 'same-origin' es la propia página pidiendo sus datos.
+    return valor === 'same-origin' || valor === 'none'
+}
+
+/**
  * ¿Se puede aceptar esta petición que CAMBIA algo?
  *
  * Exigir `application/json` no es cosmética: es lo que impide que una
@@ -260,8 +292,9 @@ async function rutaPrueba(cfg: Config): Promise<unknown> {
             ? 'OJO: el modo simulador está puesto, así que NO ha salido papel. Los bytes se '
               + 'guardaron en la carpeta volcado-simulador. Quita el simulador aquí abajo y vuelve a probar.'
             : destino.tipo_conexion === 'windows'
-                ? 'La cola de impresión de Windows lo aceptó. Si no sale papel, la impresora está '
-                  + 'apagada, sin papel o en pausa: mira su cola en Impresoras y escáneres.'
+                ? 'La cola de impresión de Windows lo aceptó, que no es lo mismo que «salió papel». '
+                  + 'Si no sale, la impresora está apagada, sin papel o en pausa: mira aquí abajo, '
+                  + 'en «La cola de Windows», si la hoja se quedó ahí esperando.'
                 : 'La impresora recibió los bytes. Si no sale papel, revisa que tenga papel y no esté en pausa.'
 
         return { ok: true, destino: textoDestino, matiz }
@@ -279,6 +312,176 @@ async function rutaPrueba(cfg: Config): Promise<unknown> {
     }
 }
 
+// ─── Preguntas a Windows ───────────────────────────────────────
+
+/**
+ * Una consulta a PowerShell a la vez por tipo.
+ *
+ * Cada llamada a PowerShell es un proceso nuevo que tarda medio segundo
+ * largo. Un botón se pulsa tres veces cuando parece que no responde, y sin
+ * este cerrojo eso son tres `powershell.exe` compitiendo en la PC que tiene
+ * que estar imprimiendo. Se rechaza la segunda con un mensaje que dice qué
+ * está pasando, en vez de encolarla en silencio.
+ */
+const enCurso = new Set<string>()
+
+/** Techo global de procesos de PowerShell simultáneos. Ni el botón más
+ *  aporreado necesita más de tres, y el bucle de impresión ya está usando
+ *  esa misma PC. */
+const MAX_CONSULTAS_A_LA_VEZ = 3
+
+async function unaSolaVez<T>(clave: string, tarea: () => Promise<T>): Promise<T> {
+    if (enCurso.has(clave) || enCurso.size >= MAX_CONSULTAS_A_LA_VEZ) {
+        throw new Error('Ya se le está preguntando eso a Windows. Espera un momento y vuelve a probar.')
+    }
+    enCurso.add(clave)
+    try {
+        return await tarea()
+    } finally {
+        enCurso.delete(clave)
+    }
+}
+
+/** Un nombre de impresora de Windows no llega ni de lejos a esto. Está para
+ *  que nadie pueda meter medio megabyte en una variable de entorno. */
+const MAX_LARGO_NOMBRE = 256
+
+/** Envoltorio común: nunca lanza hacia la ruta, devuelve el motivo. */
+async function conMotivo<T>(tarea: () => Promise<T>): Promise<{ ok: true; datos: T } | { ok: false; error: string }> {
+    try {
+        return { ok: true, datos: await tarea() }
+    } catch (e) {
+        return { ok: false, error: (e as Error).message }
+    }
+}
+
+async function rutaImpresoras(): Promise<unknown> {
+    const r = await conMotivo(() => unaSolaVez('impresoras', () => listarImpresorasWindows()))
+    return r.ok ? { impresoras: r.datos, error: null } : { impresoras: null, error: r.error }
+}
+
+async function rutaCola(nombre: string | null): Promise<unknown> {
+    if (!nombre || nombre.length > MAX_LARGO_NOMBRE) {
+        return {
+            impresora: null,
+            trabajos: null,
+            error: 'No se dijo de qué impresora mirar la cola',
+        }
+    }
+    const r = await conMotivo(() => unaSolaVez(`cola:${nombre}`, () => listarColaWindows(nombre)))
+    return r.ok
+        ? { impresora: nombre, trabajos: r.datos, error: null }
+        : { impresora: nombre, trabajos: null, error: r.error }
+}
+
+/**
+ * Cancelar trabajos de la cola de Windows.
+ *
+ * Esto tira papel a la basura: un boleto cancelado aquí ya está marcado
+ * como impreso en el sistema y nadie lo va a volver a mandar solo. La
+ * confirmación la pide la página; aquí lo que se hace es dejarlo escrito en
+ * `agente.log` (dentro de `cancelarEnColaWindows`) y no aceptar nada que no
+ * venga con la impresora nombrada explícitamente — nada de "cancela lo que
+ * haya" sin decir dónde.
+ */
+async function rutaCancelarCola(cuerpo: unknown): Promise<{ codigo: number; cuerpo: unknown }> {
+    const datos = (cuerpo ?? {}) as { impresora?: unknown; id?: unknown; todos?: unknown }
+    const nombre = typeof datos.impresora === 'string' ? datos.impresora : ''
+
+    if (!nombre || nombre.length > MAX_LARGO_NOMBRE) {
+        return { codigo: 400, cuerpo: { error: 'Falta decir de qué impresora' } }
+    }
+
+    let id: number | null = null
+    if (datos.todos !== true) {
+        if (typeof datos.id !== 'number' || !Number.isInteger(datos.id)) {
+            return { codigo: 400, cuerpo: { error: 'Falta el número de trabajo a cancelar' } }
+        }
+        id = datos.id
+    }
+
+    const r = await conMotivo(() => unaSolaVez(`cancelar:${nombre}`, () => cancelarEnColaWindows(nombre, id)))
+    if (!r.ok) return { codigo: 200, cuerpo: { ok: false, error: r.error } }
+
+    return { codigo: 200, cuerpo: { ok: true, cancelados: r.datos } }
+}
+
+// ─── Pausa ─────────────────────────────────────────────────────
+
+function rutaPausa(cuerpo: unknown, cfg: Config): { codigo: number; cuerpo: unknown } {
+    const quiere = (cuerpo as { pausado?: unknown })?.pausado
+    if (typeof quiere !== 'boolean') {
+        return { codigo: 400, cuerpo: { error: 'Hay que decir si se pausa o se reanuda' } }
+    }
+
+    if (quiere) {
+        const estado = pausar()
+        log.warn(
+            'AGENTE EN PAUSA desde la interfaz local. Deja de pedir boletos al servidor: los que '
+            + 'se generen se quedan pendientes y salen solos al reanudar. Mientras tanto, en '
+            + 'Estaciones esta caja aparece como desconectada. Reanudar en '
+            + `http://${DIRECCION_LOCAL}:${cfg.uiPuerto}`,
+        )
+        return { codigo: 200, cuerpo: { ok: true, pausa: estado } }
+    }
+
+    const estabaPausado = estadoPausa().pausado
+    const estado = reanudar()
+    if (estabaPausado) log.info('Agente reanudado desde la interfaz local: vuelve a pedir boletos.')
+    return { codigo: 200, cuerpo: { ok: true, pausa: estado } }
+}
+
+// ─── Registro ──────────────────────────────────────────────────
+
+async function rutaRegistro(pedidas: string | null): Promise<unknown> {
+    const n = Number(pedidas)
+    const lineas = Number.isFinite(n) && n > 0 ? Math.floor(n) : LINEAS_POR_DEFECTO
+    const r = await leerFinalDelRegistro(RUTA_LOG, lineas)
+
+    return { ...r, ruta: RUTA_LOG }
+}
+
+/**
+ * Manda `agente.log` como descarga.
+ *
+ * Por un flujo y no leyéndolo en memoria: el archivo puede llegar a 5 MB
+ * antes de rotar, y este proceso es el que tiene que estar imprimiendo. Si
+ * el archivo no existe o se rompe la lectura a mitad, se corta la respuesta
+ * sin que nada de eso salga de aquí.
+ */
+function rutaDescargarRegistro(res: http.ServerResponse): void {
+    let flujo: fs.ReadStream
+    try {
+        flujo = fs.createReadStream(RUTA_LOG)
+    } catch (e) {
+        responderJson(res, 404, { error: `No se pudo abrir el registro — ${(e as Error).message}` })
+        return
+    }
+
+    flujo.on('error', e => {
+        if (!res.headersSent) {
+            responderJson(res, 404, {
+                error: `No se pudo leer ${RUTA_LOG} — ${(e as Error).message}`,
+            })
+            return
+        }
+        res.destroy()
+    })
+
+    flujo.on('open', () => {
+        res.writeHead(200, {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'Content-Disposition': `attachment; filename="${nombreDeDescarga()}"`,
+            'Cache-Control': 'no-store',
+            'X-Content-Type-Options': 'nosniff',
+        })
+        flujo.pipe(res)
+    })
+
+    // Si el navegador cancela la descarga a medias, se cierra el archivo.
+    res.on('close', () => flujo.destroy())
+}
+
 function rutaEstado(cfg: Config, rutaEnv: string): unknown {
     const e = instantanea()
     const env = leerEnv(rutaEnv)
@@ -287,9 +490,18 @@ function rutaEstado(cfg: Config, rutaEnv: string): unknown {
         version: VERSION_AGENTE,
         uiPuerto: cfg.uiPuerto,
         iniciadoEn: e.iniciadoEn,
+        // La pausa viaja con el estado, que se refresca cada 3 s, y no solo
+        // como respuesta al botón: el cartel tiene que aparecer también en
+        // una pestaña que ya estaba abierta cuando otro la pausó, y seguir
+        // ahí al recargar la página.
+        pausa: estadoPausa(),
         estacion: e.estacion,
         sucursal: e.sucursal,
         destinoTexto: describirDestino(e.destino),
+        // Crudos además del texto: la cola de Windows hay que pedirla por el
+        // nombre EXACTO de la impresora, y «Windows «POS»» no es ese nombre.
+        destinoTipo: e.destino?.tipo_conexion ?? null,
+        destinoNombre: e.destino?.nombre ?? null,
         anchoCols: e.anchoCols,
         codepage: e.codepage,
         ultimoLatido: e.ultimoLatido,
@@ -387,7 +599,15 @@ function crearManejador({ cfg, rutaEnv }: OpcionesUi) {
             return
         }
 
-        const ruta = (req.url ?? '/').split('?')[0]
+        if (!peticionDeEstaPagina(req.headers['sec-fetch-site'] as string | undefined)) {
+            responderJson(res, 403, { error: 'Esta interfaz solo atiende a su propia página' })
+            return
+        }
+
+        // La base es fija y de mentira: solo sirve para que `URL` sepa
+        // separar la ruta de los parámetros. No se usa para nada más.
+        const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+        const ruta = url.pathname
         const metodo = req.method ?? 'GET'
 
         if (metodo === 'GET' && (ruta === '/' || ruta === '/index.html')) {
@@ -417,6 +637,26 @@ function crearManejador({ cfg, rutaEnv }: OpcionesUi) {
             return
         }
 
+        if (metodo === 'GET' && ruta === '/api/impresoras') {
+            responderJson(res, 200, await rutaImpresoras())
+            return
+        }
+
+        if (metodo === 'GET' && ruta === '/api/cola') {
+            responderJson(res, 200, await rutaCola(url.searchParams.get('impresora')))
+            return
+        }
+
+        if (metodo === 'GET' && ruta === '/api/registro') {
+            responderJson(res, 200, await rutaRegistro(url.searchParams.get('lineas')))
+            return
+        }
+
+        if (metodo === 'GET' && ruta === '/api/registro/descargar') {
+            rutaDescargarRegistro(res)
+            return
+        }
+
         if (metodo === 'POST') {
             if (!mutacionPermitida(req.headers['content-type'], req.headers.origin, cfg.uiPuerto)) {
                 responderJson(res, 403, { error: 'Petición rechazada por seguridad' })
@@ -441,6 +681,16 @@ function crearManejador({ cfg, rutaEnv }: OpcionesUi) {
             }
             if (ruta === '/api/config') {
                 const r = rutaConfig(cuerpo, cfg, rutaEnv)
+                responderJson(res, r.codigo, r.cuerpo)
+                return
+            }
+            if (ruta === '/api/pausa') {
+                const r = rutaPausa(cuerpo, cfg)
+                responderJson(res, r.codigo, r.cuerpo)
+                return
+            }
+            if (ruta === '/api/cola/cancelar') {
+                const r = await rutaCancelarCola(cuerpo)
                 responderJson(res, r.codigo, r.cuerpo)
                 return
             }

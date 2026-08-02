@@ -20,7 +20,15 @@ import type { RespuestaHello } from './api'
  *  mostrador sin que la página se vuelva ilegible ni la memoria crezca. */
 export const MAX_ACTIVIDAD = 50
 
-export type ResultadoActividad = 'impreso' | 'error' | 'descartado' | 'simulado'
+/**
+ * `devuelto` es el resultado de un boleto que el agente tenía reclamado y
+ * NO llegó a imprimir porque alguien pausó el agente en medio. No es un
+ * error (nada está roto) ni un descarte (el boleto no se perdió): volvió a
+ * la cola del servidor y sale solo al reanudar. Merece un nombre propio
+ * porque llamarlo "error" mandaría a alguien a buscar una avería que no
+ * existe, y llamarlo "impreso" sería mentir sobre papel que no salió.
+ */
+export type ResultadoActividad = 'impreso' | 'error' | 'descartado' | 'simulado' | 'devuelto'
 
 export interface RegistroActividad {
     /** Id del trabajo en el servidor, o un id local para las pruebas. */

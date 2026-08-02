@@ -1,6 +1,6 @@
 import net from 'node:net'
 import { ClienteApi, ErrorHttp } from './api'
-import { listarImpresorasWindows } from './impresora-windows'
+import { listarImpresorasWindows, type ImpresoraInstalada } from './impresora-windows'
 import { describirDestino, destinoConocido, registrarSaludo } from './estado'
 import type { Config } from './config'
 import type { DestinoImpresora } from './tipos'
@@ -30,14 +30,27 @@ export interface PuntoDiagnostico {
     resumen: string
     /** Qué hacer al respecto. Siempre presente, también cuando va bien. */
     queHacer: string
-    /** Lista auxiliar (hoy: las impresoras que sí existen en este PC). */
-    lista?: string[]
-    tituloLista?: string
 }
 
 export interface ResultadoDiagnostico {
     at: string
     puntos: PuntoDiagnostico[]
+    /**
+     * Las impresoras de este PC, con su estado.
+     *
+     * Viajan con el diagnóstico y no en una llamada aparte porque el punto
+     * de la impresora ya tuvo que preguntárselo a Windows para poder
+     * decidir su veredicto: pedirlo dos veces serían dos PowerShell por
+     * cada comprobación, en la PC que tiene que estar imprimiendo.
+     *
+     * `null` significa «no se pudo preguntar», que no es lo mismo que una
+     * lista vacía («aquí no hay ninguna impresora instalada»): la primera
+     * no dice nada de la impresora y la segunda lo dice todo.
+     */
+    impresoras: ImpresoraInstalada[] | null
+    errorImpresoras: string | null
+    /** Qué impresora pide el servidor, para poder señalarla en la lista. */
+    impresoraPedida: string | null
 }
 
 /** Intenta abrir un socket y cerrarlo. No manda ni un byte a la impresora. */
@@ -241,23 +254,96 @@ export function compararNombreImpresora(pedido: string, instalada: string): Pare
     return 'ninguno'
 }
 
-async function comprobarImpresora(destino: DestinoImpresora | null): Promise<PuntoDiagnostico> {
+/**
+ * Qué decir de una impresora que SÍ existe pero no está lista.
+ *
+ * Este es el caso que antes se perdía. La comprobación solo miraba si el
+ * nombre estaba en la lista, así que una impresora en pausa salía en verde
+ * — y en verde con toda la razón desde el punto de vista del nombre, y
+ * completamente equivocado desde el punto de vista de la única pregunta que
+ * importa: ¿va a salir el papel? Con la impresora en pausa el spooler
+ * acepta los boletos, el agente los confirma, el sistema los marca como
+ * impresos y no sale nada. «No existe» y «existe pero está en pausa» piden
+ * dos arreglos que no se parecen en nada: uno se corrige en el sistema
+ * escribiendo bien el nombre, el otro se corrige aquí en la PC con dos
+ * clics.
+ */
+function veredictoPorEstado(impresora: ImpresoraInstalada): PuntoDiagnostico | null {
+    const base = { clave: 'impresora', titulo: 'Impresora' } as const
+    const cola = impresora.enCola && impresora.enCola > 0
+        ? ` Hay ${impresora.enCola} trabajo(s) esperando en su cola: míralos abajo, en «La cola de Windows».`
+        : ''
+
+    if (impresora.estado === 'pausa') {
+        return {
+            ...base,
+            nivel: 'error',
+            resumen: `La impresora «${impresora.nombre}» existe, pero está EN PAUSA en Windows`,
+            queHacer:
+                'No es un problema de configuración: el nombre está bien. Windows le va a aceptar '
+                + 'los boletos igual y el sistema los va a dar por impresos, pero no va a salir ni '
+                + 'uno hasta que la reanudes. Abre «Impresoras y escáneres», entra en '
+                + `«${impresora.nombre}» y quita la pausa (en la cola: Impresora → Pausar impresión, `
+                + 'desmarcado).' + cola,
+        }
+    }
+
+    if (impresora.estado === 'sin-conexion') {
+        return {
+            ...base,
+            nivel: 'error',
+            resumen: `La impresora «${impresora.nombre}» existe, pero Windows la ve sin conexión`,
+            queHacer:
+                'El nombre está bien; lo que falla es la impresora. Comprueba que esté encendida y '
+                + 'con el cable puesto. Si está bien y sigue así, en «Impresoras y escáneres» mira '
+                + 'que no tenga marcado «Usar impresora sin conexión».' + cola,
+        }
+    }
+
+    if (impresora.estado === 'error') {
+        return {
+            ...base,
+            nivel: 'error',
+            resumen: `La impresora «${impresora.nombre}» existe, pero Windows la marca con problema: ${impresora.estadoTexto.toLowerCase()}`,
+            queHacer:
+                'El nombre está bien y el agente le puede hablar; lo que hay que atender es la '
+                + 'impresora en sí. Arregla lo que dice ahí arriba y los boletos que estén esperando '
+                + 'salen solos.' + cola,
+        }
+    }
+
+    if (impresora.estado === 'desconocido') {
+        return {
+            ...base,
+            nivel: 'aviso',
+            resumen:
+                `La impresora «${impresora.nombre}» existe, pero Windows la describe con algo que `
+                + `este panel no sabe traducir: «${impresora.estadoCrudo}»`,
+            queHacer:
+                'Probablemente no pase nada. Usa la prueba de impresión de abajo, que es la única '
+                + 'que confirma que sale papel, y pásale ese texto a soporte tal cual si falla.',
+        }
+    }
+
+    return null
+}
+
+async function comprobarImpresora(
+    destino: DestinoImpresora | null,
+    instaladas: ImpresoraInstalada[] | null,
+    errorAlListar: string | null,
+): Promise<PuntoDiagnostico> {
     const base = { clave: 'impresora', titulo: 'Impresora' } as const
 
     if (!destino) {
-        // Aun sin saber qué impresora pide el servidor, la lista de las que
-        // hay instaladas es lo primero que va a preguntar soporte.
-        const instaladas = await listarImpresorasWindows().catch(() => null)
         return {
             ...base,
             nivel: 'desconocido',
             resumen: 'Todavía no se sabe qué impresora usar',
             queHacer:
                 'El nombre de la impresora lo manda el servidor, no se pone en esta PC. '
-                + 'Hasta que el servidor conteste no hay nada que comprobar.',
-            ...(instaladas
-                ? { lista: instaladas, tituloLista: 'Impresoras instaladas en este PC' }
-                : {}),
+                + 'Hasta que el servidor conteste no hay nada que comprobar. Mientras tanto, ahí '
+                + 'abajo tienes las impresoras que sí están instaladas en este PC.',
         }
     }
 
@@ -303,14 +389,11 @@ async function comprobarImpresora(destino: DestinoImpresora | null): Promise<Pun
         }
     }
 
-    let instaladas: string[]
-    try {
-        instaladas = await listarImpresorasWindows()
-    } catch (e) {
+    if (!instaladas) {
         return {
             ...base,
             nivel: 'desconocido',
-            resumen: `No se pudo preguntar a Windows qué impresoras hay — ${(e as Error).message}`,
+            resumen: `No se pudo preguntar a Windows qué impresoras hay — ${errorAlListar ?? 'motivo desconocido'}`,
             queHacer:
                 'No significa que la impresora esté mal: significa que esta comprobación no se '
                 + 'pudo hacer. Usa la prueba de impresión de abajo, que sí manda papel de verdad.',
@@ -318,33 +401,40 @@ async function comprobarImpresora(destino: DestinoImpresora | null): Promise<Pun
     }
 
     const pedido = destino.nombre
-    const parecidos = instaladas.map(n => ({ nombre: n, como: compararNombreImpresora(pedido, n) }))
+    const parecidos = instaladas.map(i => ({ impresora: i, como: compararNombreImpresora(pedido, i.nombre) }))
 
-    if (parecidos.some(p => p.como === 'exacto')) {
-        return {
+    const exacta = parecidos.find(p => p.como === 'exacto')
+    if (exacta) {
+        // El nombre es el correcto. Ahora la otra mitad de la pregunta, la
+        // que antes no se hacía: ¿está esa impresora en condiciones de
+        // sacar papel?
+        return veredictoPorEstado(exacta.impresora) ?? {
             ...base,
             nivel: 'ok',
-            resumen: `La impresora «${pedido}» existe en este PC`,
+            resumen: `La impresora «${pedido}» existe en este PC y Windows la da por lista`,
             queHacer:
-                'Nada. Que exista no garantiza que salga papel (puede estar apagada, sin papel o '
-                + 'en pausa): eso lo confirma la prueba de impresión de abajo.',
+                'Nada. Que Windows la dé por lista sigue sin garantizar que tenga papel puesto: '
+                + 'eso lo confirma la prueba de impresión de abajo.',
         }
     }
 
     const porMayusculas = parecidos.find(p => p.como === 'solo-mayusculas')
     if (porMayusculas) {
+        // Las mayúsculas no rompen nada, pero el estado sí puede: si además
+        // está en pausa, eso manda, porque es lo que impide imprimir.
+        const porEstado = veredictoPorEstado(porMayusculas.impresora)
+        if (porEstado) return porEstado
+
         return {
             ...base,
             nivel: 'aviso',
             resumen:
-                `El servidor pide «${pedido}» y en este PC se llama «${porMayusculas.nombre}»: `
+                `El servidor pide «${pedido}» y en este PC se llama «${porMayusculas.impresora.nombre}»: `
                 + 'solo cambian las mayúsculas, y eso a Windows le da igual, así que imprime bien',
             queHacer:
                 'No hay nada roto y los boletos salen. Aun así, escribir el nombre igual en '
                 + 'Estaciones evita que el próximo que mire esto pierda el rato buscando un '
-                + 'problema donde no lo hay.',
-            lista: instaladas,
-            tituloLista: 'Impresoras instaladas en este PC',
+                + 'problema donde no lo hay. Copia el nombre exacto con el botón de la lista de abajo.',
         }
     }
 
@@ -354,14 +444,13 @@ async function comprobarImpresora(destino: DestinoImpresora | null): Promise<Pun
             ...base,
             nivel: 'error',
             resumen:
-                `El servidor pide «${pedido}» y en este PC se llama «${porEspacios.nombre}»: `
+                `El servidor pide «${pedido}» y en este PC se llama «${porEspacios.impresora.nombre}»: `
                 + 'la diferencia son espacios, y esos Windows SÍ los distingue',
             queHacer:
-                `Escribe «${porEspacios.nombre}» tal cual en Estaciones, en el sistema, sin espacios `
-                + 'de más al principio ni al final. Es el fallo más difícil de ver a ojo, porque '
-                + 'los dos nombres parecen el mismo.',
-            lista: instaladas,
-            tituloLista: 'Impresoras instaladas en este PC',
+                `Escribe «${porEspacios.impresora.nombre}» tal cual en Estaciones, en el sistema, sin `
+                + 'espacios de más al principio ni al final. Es el fallo más difícil de ver a ojo, '
+                + 'porque los dos nombres parecen el mismo: cópialo con el botón «Copiar nombre» de '
+                + 'la lista de abajo y pégalo, no lo escribas a mano.',
         }
     }
 
@@ -375,23 +464,43 @@ async function comprobarImpresora(destino: DestinoImpresora | null): Promise<Pun
                   + 'agente. Instálala en Windows con esa misma cuenta (es el fallo de instalación '
                   + 'más común: ver el apartado de NSSM en el README).'
                 : 'Compara con la lista de aquí abajo. O corriges el nombre en Estaciones, en el '
-                  + 'sistema, para que coincida con una de esas, o renombras la impresora en este PC. '
-                  + 'Si la que buscas no está en la lista, es que no está instalada para la cuenta '
-                  + 'con la que corre el agente.',
-        lista: instaladas,
-        tituloLista: 'Impresoras instaladas en este PC',
+                  + 'sistema, para que coincida con una de esas —copia el nombre con el botón, no lo '
+                  + 'escribas a ojo—, o renombras la impresora en este PC. Si la que buscas no está '
+                  + 'en la lista, es que no está instalada para la cuenta con la que corre el agente.',
     }
 }
 
 /**
  * Ejecuta las comprobaciones. Nunca lanza: un diagnóstico que se rompe
  * dejaría la interfaz en blanco justo cuando algo va mal.
+ *
+ * La lista de impresoras se pide SIEMPRE, también cuando la estación es de
+ * red y cuando todo va bien. Antes solo aparecía si algo no cuadraba, y eso
+ * la volvía inútil justo en el momento en que más se usa: cuando alguien
+ * está montando la estación y necesita copiar el nombre exacto para
+ * escribirlo en el sistema. Que falle no puede tumbar el diagnóstico: se
+ * devuelve `impresoras: null` con el motivo al lado.
  */
 export async function ejecutarDiagnostico(cfg: Config): Promise<ResultadoDiagnostico> {
     const { servidor, token, destino } = await comprobarServidorYToken(cfg)
-    const impresora = await comprobarImpresora(destino)
 
-    return { at: new Date().toISOString(), puntos: [servidor, token, impresora] }
+    let instaladas: ImpresoraInstalada[] | null = null
+    let errorImpresoras: string | null = null
+    try {
+        instaladas = await listarImpresorasWindows()
+    } catch (e) {
+        errorImpresoras = (e as Error).message
+    }
+
+    const impresora = await comprobarImpresora(destino, instaladas, errorImpresoras)
+
+    return {
+        at: new Date().toISOString(),
+        puntos: [servidor, token, impresora],
+        impresoras: instaladas,
+        errorImpresoras,
+        impresoraPedida: destino?.tipo_conexion === 'windows' ? destino.nombre : null,
+    }
 }
 
 /** Reexportado para la interfaz, que enseña el destino con el mismo texto. */

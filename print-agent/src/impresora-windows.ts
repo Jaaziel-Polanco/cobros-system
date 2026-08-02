@@ -4,6 +4,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { log } from './logger'
+import { correrPowerShell, filasDeSalida } from './powershell'
 
 /**
  * Impresión en Windows: cómo se eligió y qué se descartó
@@ -265,6 +266,109 @@ export function imprimirWindows(
     })
 }
 
+// ─── Qué impresoras hay y cómo están ───────────────────────────
+
+/**
+ * En qué situación está una impresora, reducido a lo único que decide qué
+ * hacer en un mostrador.
+ *
+ * Windows tiene veintitantas banderas de estado. Aquí solo importan cuatro
+ * grupos, porque cada uno lleva a una acción distinta:
+ *
+ *  - `lista`        → no hay nada que tocar.
+ *  - `pausa`        → alguien la pausó. El spooler SIGUE aceptando trabajos
+ *                     y el agente los da por entregados, pero no sale ni
+ *                     un papel. Es el fallo silencioso por excelencia.
+ *  - `sin-conexion` → Windows no la ve: apagada, cable suelto, o marcada
+ *                     como «usar sin conexión».
+ *  - `error`        → sin papel, atascada, tapa abierta.
+ */
+export type EstadoImpresora = 'lista' | 'pausa' | 'sin-conexion' | 'error' | 'desconocido'
+
+export interface ImpresoraInstalada {
+    /** Tal cual lo escribe Windows, sin recortar. Es lo que hay que copiar. */
+    nombre: string
+    estado: EstadoImpresora
+    /** Lo que dijo Windows sin traducir, para soporte. */
+    estadoCrudo: string
+    /** Una línea en castellano de mostrador. */
+    estadoTexto: string
+    /** `EmuladorPOS_9100`, `USB001`, `192.168.1.60`… */
+    puerto: string
+    controlador: string
+    predeterminada: boolean
+    /** Trabajos esperando en la cola de Windows. `null` si no se pudo contar. */
+    enCola: number | null
+}
+
+/** Banderas de Windows que NO impiden que salga papel. */
+const BANDERAS_SANAS = new Set([
+    'normal', 'idle', 'printing', 'spooling', 'ioactive', 'busy', 'processing',
+    'waiting', 'warmingup', 'initializing', 'powersave', 'tonerlow',
+])
+
+/** Banderas que dejan a la impresora sin poder imprimir, con su motivo. */
+const BANDERAS_ROTAS: Record<string, string> = {
+    paperout: 'Se quedó sin papel',
+    paperjam: 'Tiene papel atascado',
+    paperproblem: 'Tiene un problema con el papel',
+    dooropen: 'Tiene la tapa abierta',
+    notoner: 'Se quedó sin tinta o sin tóner',
+    outputbinfull: 'Tiene la bandeja de salida llena',
+    userintervention: 'Pide que alguien la atienda',
+    outofmemory: 'Se quedó sin memoria',
+    pagepunt: 'No pudo con la página',
+    pendingdeletion: 'Se está borrando de este PC',
+    manualfeed: 'Está esperando que le metan el papel a mano',
+    error: 'Windows la marca con error',
+}
+
+const BANDERAS_SIN_CONEXION = new Set(['offline', 'notavailable', 'serverunknown'])
+
+/**
+ * Traduce lo que dice Windows a lo que hay que hacer.
+ *
+ * `PrinterStatus` es una lista de banderas: `Paused`, pero también
+ * `Paused, Error` o `Offline, PaperOut`. Se miran por orden de gravedad
+ * práctica —primero pausa, luego sin conexión, luego avería— porque el
+ * primer paso a dar es distinto en cada caso y enseñar los tres a la vez
+ * no ayuda a nadie a decidir por dónde empezar.
+ */
+export function clasificarEstadoImpresora(
+    crudo: string,
+): { estado: EstadoImpresora; texto: string } {
+    const banderas = crudo.split(',')
+        .map(b => b.trim().toLowerCase().replace(/[\s_-]/g, ''))
+        .filter(Boolean)
+
+    if (banderas.length === 0) {
+        return { estado: 'desconocido', texto: 'Windows no dijo en qué estado está' }
+    }
+
+    if (banderas.includes('paused')) {
+        return {
+            estado: 'pausa',
+            texto: 'EN PAUSA. Windows le acepta los boletos pero no imprime ninguno hasta que se reanude',
+        }
+    }
+
+    if (banderas.some(b => BANDERAS_SIN_CONEXION.has(b))) {
+        return {
+            estado: 'sin-conexion',
+            texto: 'Sin conexión: Windows no la encuentra (apagada, cable suelto, o marcada como «usar sin conexión»)',
+        }
+    }
+
+    const rota = banderas.find(b => b in BANDERAS_ROTAS)
+    if (rota) return { estado: 'error', texto: BANDERAS_ROTAS[rota] }
+
+    if (banderas.every(b => BANDERAS_SANAS.has(b))) {
+        return { estado: 'lista', texto: 'Lista para imprimir' }
+    }
+
+    return { estado: 'desconocido', texto: `Windows dice «${crudo}»` }
+}
+
 /**
  * Script que lista las impresoras instaladas PARA LA CUENTA que corre este
  * proceso. Ese matiz es el que hace útil la lista: el fallo de instalación
@@ -276,71 +380,137 @@ export function imprimirWindows(
  *
  * `Get-Printer` primero (es el cmdlet moderno) y `Win32_Printer` por WMI si
  * no está el módulo PrintManagement, que falta en algunas ediciones e
- * instalaciones recortadas de Windows.
+ * instalaciones recortadas de Windows. Los dos caminos emiten el MISMO
+ * vocabulario de banderas (`Paused`, `Offline`, `PaperOut`…): la traducción
+ * de la máscara de bits de WMI se hace aquí y no en TypeScript, para que
+ * `clasificarEstadoImpresora` tenga una sola lista de nombres que entender.
+ *
+ * Cuál es la predeterminada y cuántos trabajos hay en cada cola son dos
+ * preguntas de adorno comparadas con la lista en sí: si fallan, se sigue
+ * adelante sin ellas en vez de quedarse sin lista.
  */
 const SCRIPT_LISTAR = `
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
-$nombres = @()
+$s = [string][char]31
 try {
-    $nombres = @(Get-Printer -ErrorAction Stop | Select-Object -ExpandProperty Name)
+    # Cual es la predeterminada y cuales estan marcadas como 'usar sin
+    # conexion'. Lo segundo hace falta porque Get-Printer NO lo refleja:
+    # comprobado en Windows 11, con WorkOffline=True el PrinterStatus sigue
+    # diciendo 'Normal'. Y 'usar impresora sin conexion' es una de las
+    # causas mas comunes de que Windows acepte los boletos y no salga
+    # ninguno, justo el fallo que esta pantalla existe para cazar.
+    $pred = ''
+    $sinConexion = @{}
+    try {
+        foreach ($w in @(Get-CimInstance Win32_Printer -ErrorAction Stop)) {
+            if ($w.Default) { $pred = [string]$w.Name }
+            if ($w.WorkOffline) { $sinConexion[[string]$w.Name] = $true }
+        }
+    } catch { $pred = '' }
+
+    $cuenta = @{}
+    $hayCuenta = $true
+    try {
+        foreach ($t in @(Get-CimInstance Win32_PrintJob -ErrorAction Stop)) {
+            $n = [string]$t.Name
+            $i = $n.LastIndexOf(',')
+            if ($i -gt 0) { $n = $n.Substring(0, $i) }
+            if ($cuenta.ContainsKey($n)) { $cuenta[$n] = $cuenta[$n] + 1 } else { $cuenta[$n] = 1 }
+        }
+    } catch { $hayCuenta = $false }
+
+    $filas = New-Object System.Collections.ArrayList
+    try {
+        foreach ($p in @(Get-Printer -ErrorAction Stop)) {
+            [void]$filas.Add(@([string]$p.Name, [string]$p.PrinterStatus, [string]$p.PortName, [string]$p.DriverName))
+        }
+    } catch {
+        $filas.Clear()
+        foreach ($p in @(Get-CimInstance Win32_Printer -ErrorAction Stop)) {
+            $e = New-Object System.Collections.ArrayList
+            $st = 0
+            try { $st = [int]$p.PrinterState } catch { $st = 0 }
+            if ($st -band 1)     { [void]$e.Add('Paused') }
+            if ($st -band 2)     { [void]$e.Add('Error') }
+            if ($st -band 4)     { [void]$e.Add('PendingDeletion') }
+            if ($st -band 8)     { [void]$e.Add('PaperJam') }
+            if ($st -band 16)    { [void]$e.Add('PaperOut') }
+            if ($st -band 32)    { [void]$e.Add('ManualFeed') }
+            if ($st -band 64)    { [void]$e.Add('PaperProblem') }
+            if ($st -band 128)   { [void]$e.Add('Offline') }
+            if ($st -band 4096)  { [void]$e.Add('NotAvailable') }
+            if ($st -band 262144){ [void]$e.Add('NoToner') }
+            if ($st -band 4194304) { [void]$e.Add('DoorOpen') }
+            if ($p.WorkOffline)  { [void]$e.Add('Offline') }
+            if ($e.Count -eq 0)  { [void]$e.Add('Normal') }
+            [void]$filas.Add(@([string]$p.Name, ($e -join ', '), [string]$p.PortName, [string]$p.DriverName))
+        }
+    }
+
+    foreach ($f in $filas) {
+        $n = $f[0]
+        $estado = [string]$f[1]
+        if ($sinConexion.ContainsKey($n) -and ($estado -notmatch 'Offline')) {
+            $estado = $estado + ', Offline'
+        }
+        $c = 'x'
+        if ($hayCuenta) {
+            if ($cuenta.ContainsKey($n)) { $c = [string]$cuenta[$n] } else { $c = '0' }
+        }
+        $d = '0'
+        if ($n -eq $pred) { $d = '1' }
+        Write-Output ('P' + $s + $n + $s + $estado + $s + $f[2] + $s + $f[3] + $s + $d + $s + $c)
+    }
+    exit 0
 } catch {
-    $nombres = @(Get-CimInstance Win32_Printer -ErrorAction Stop | Select-Object -ExpandProperty Name)
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
 }
-foreach ($n in $nombres) { Write-Output $n }
 `.trim()
 
+/** Análisis puro de la salida del script. Separado para poder probarlo. */
+export function analizarSalidaImpresoras(salida: string): ImpresoraInstalada[] {
+    return filasDeSalida(salida, 'P', 6).map(campos => {
+        const [nombre, estadoCrudo, puerto, controlador, predeterminada, enCola] = campos
+        const { estado, texto } = clasificarEstadoImpresora(estadoCrudo)
+
+        return {
+            nombre,
+            estado,
+            estadoCrudo,
+            estadoTexto: texto,
+            puerto,
+            controlador,
+            predeterminada: predeterminada === '1',
+            enCola: /^\d+$/.test(enCola) ? Number(enCola) : null,
+        }
+    })
+}
+
 /**
- * Nombres de las impresoras instaladas en este PC, tal cual los ve Windows.
+ * Las impresoras instaladas en este PC, con su estado, su puerto, su
+ * controlador y cuál es la predeterminada.
  *
- * Existe para un caso concreto y muy repetido: el servidor manda
- * `destino.nombre` y el agente no lo elige, así que cuando esa impresora no
- * existe aquí, decir "no se pudo abrir la impresora" no ayuda a nadie. Ver
- * al lado que el servidor pide `POS` y que en este PC se llama `POS-58`
- * resuelve el problema en un vistazo.
+ * Existe para dos casos concretos y muy repetidos:
+ *
+ * 1. El servidor manda `destino.nombre` y el agente no lo elige, así que
+ *    cuando esa impresora no existe aquí, decir "no se pudo abrir la
+ *    impresora" no ayuda a nadie. Ver al lado que el servidor pide `POS` y
+ *    que en este PC se llama `POS-58` resuelve el problema en un vistazo.
+ * 2. La impresora SÍ existe pero está en pausa o sin conexión. Antes eso se
+ *    veía igual que si existiera y estuviera bien —la comprobación solo
+ *    miraba el nombre—, y sin embargo es la causa más común de que el
+ *    sistema diga «impreso» y del papel no salga nada.
  *
  * Rechaza si no se pudo consultar; nunca devuelve una lista vacía para
  * disimular un fallo, porque "no hay impresoras" y "no se pudo preguntar"
  * llevan a acciones distintas.
  */
-export function listarImpresorasWindows(timeoutMs = 12_000): Promise<string[]> {
-    return new Promise((resolver, rechazar) => {
-        let terminado = false
-        const acabar = (err: Error | null, nombres?: string[]) => {
-            if (terminado) return
-            terminado = true
-            clearTimeout(temporizador)
-            if (err) rechazar(err)
-            else resolver(nombres ?? [])
-        }
-
-        const proceso = spawn('powershell.exe', [
-            '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-            '-Command', SCRIPT_LISTAR,
-        ])
-
-        let salida = ''
-        let salidaError = ''
-        proceso.stdout?.on('data', d => { salida += d.toString() })
-        proceso.stderr?.on('data', d => { salidaError += d.toString() })
-
-        const temporizador = setTimeout(() => {
-            proceso.kill()
-            acabar(new Error(`Windows tardó más de ${timeoutMs / 1000} s en dar la lista de impresoras`))
-        }, timeoutMs)
-
-        proceso.on('error', err => {
-            acabar(new Error(`No se pudo ejecutar PowerShell para listar las impresoras — ${err.message}`))
-        })
-
-        proceso.on('close', codigo => {
-            if (codigo !== 0) {
-                acabar(new Error(
-                    `Windows no devolvió la lista de impresoras — ${salidaError.trim() || `powershell salió con código ${codigo}`}`,
-                ))
-                return
-            }
-            acabar(null, salida.split(/\r?\n/).map(l => l.trim()).filter(Boolean))
-        })
+export async function listarImpresorasWindows(timeoutMs = 12_000): Promise<ImpresoraInstalada[]> {
+    const salida = await correrPowerShell(SCRIPT_LISTAR, {
+        timeoutMs,
+        queSeIntentaba: 'dar la lista de impresoras de este PC',
     })
+    return analizarSalidaImpresoras(salida)
 }

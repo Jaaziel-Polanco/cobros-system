@@ -3,16 +3,35 @@ import net from 'node:net'
 import { explicarFalloDeRed, probarConexionTcp } from './diagnostico'
 import { reiniciarEstado } from './estado'
 import type { Config } from './config'
+import type { ImpresoraInstalada } from './impresora-windows'
 
 // `listarImpresorasWindows` lanza PowerShell: en una prueba no hay Windows
 // (ni debe haberlo), así que se sustituye. Lo que se comprueba aquí es que
 // el diagnóstico traduce bien cada situación a algo que se pueda leer en un
 // mostrador, no que PowerShell funcione.
-const listarMock = vi.fn<() => Promise<string[]>>()
+const listarMock = vi.fn<() => Promise<ImpresoraInstalada[]>>()
 vi.mock('./impresora-windows', () => ({
     listarImpresorasWindows: () => listarMock(),
     imprimirWindows: () => Promise.resolve(),
 }))
+
+/** Una impresora instalada y sana, para no repetir el objeto entero. */
+function instalada(
+    nombre: string,
+    cambios: Partial<ImpresoraInstalada> = {},
+): ImpresoraInstalada {
+    return {
+        nombre,
+        estado: 'lista',
+        estadoCrudo: 'Normal',
+        estadoTexto: 'Lista para imprimir',
+        puerto: 'USB001',
+        controlador: 'Generic / Text Only',
+        predeterminada: false,
+        enCola: 0,
+        ...cambios,
+    }
+}
 
 const originalFetch = globalThis.fetch
 
@@ -53,10 +72,15 @@ async function correr() {
     return Object.fromEntries(r.puntos.map(p => [p.clave, p]))
 }
 
+async function correrEntero() {
+    const { ejecutarDiagnostico } = await import('./diagnostico')
+    return ejecutarDiagnostico(cfg())
+}
+
 describe('servidor y token', () => {
     it('con todo bien, dice a qué estación y sucursal pertenece este token', async () => {
         globalThis.fetch = vi.fn(() => respuesta(HELLO_WINDOWS)) as never
-        listarMock.mockResolvedValue(['POS'])
+        listarMock.mockResolvedValue([instalada('POS')])
 
         const p = await correr()
         expect(p.servidor.nivel).toBe('ok')
@@ -69,7 +93,7 @@ describe('servidor y token', () => {
 
     it('un 401 culpa al token, no a la red: el servidor contestó', async () => {
         globalThis.fetch = vi.fn(() => respuesta({ error: 'Token inválido' }, 401)) as never
-        listarMock.mockResolvedValue(['POS'])
+        listarMock.mockResolvedValue([instalada('POS')])
 
         const p = await correr()
         expect(p.servidor.nivel).toBe('ok')
@@ -79,7 +103,7 @@ describe('servidor y token', () => {
 
     it('si no se llega al servidor, no se inventa un veredicto sobre el token', async () => {
         globalThis.fetch = vi.fn(() => Promise.reject(new Error('ECONNREFUSED'))) as never
-        listarMock.mockResolvedValue(['POS'])
+        listarMock.mockResolvedValue([instalada('POS')])
 
         const p = await correr()
         expect(p.servidor.nivel).toBe('error')
@@ -101,19 +125,20 @@ describe('servidor y token', () => {
 describe('impresora de Windows — el punto que más ayuda', () => {
     beforeEach(() => { globalThis.fetch = vi.fn(() => respuesta(HELLO_WINDOWS)) as never })
 
-    it('en verde cuando el nombre coincide exacto', async () => {
-        listarMock.mockResolvedValue(['Microsoft Print to PDF', 'POS'])
+    it('en verde cuando el nombre coincide exacto y Windows la da por lista', async () => {
+        listarMock.mockResolvedValue([instalada('Microsoft Print to PDF'), instalada('POS')])
         const p = await correr()
         expect(p.impresora.nivel).toBe('ok')
     })
 
     it('cuando no existe, ENSEÑA las que sí hay en este PC', async () => {
-        listarMock.mockResolvedValue(['POS-58', 'Microsoft Print to PDF'])
-        const p = await correr()
+        listarMock.mockResolvedValue([instalada('POS-58'), instalada('Microsoft Print to PDF')])
+        const r = await correrEntero()
+        const p = Object.fromEntries(r.puntos.map(x => [x.clave, x]))
 
         expect(p.impresora.nivel).toBe('error')
         expect(p.impresora.resumen).toContain('POS')
-        expect(p.impresora.lista).toEqual(['POS-58', 'Microsoft Print to PDF'])
+        expect(r.impresoras?.map(i => i.nombre)).toEqual(['POS-58', 'Microsoft Print to PDF'])
     })
 
     it('NO da por roto lo que Windows acepta: una diferencia de mayúsculas es un aviso', async () => {
@@ -125,7 +150,7 @@ describe('impresora de Windows — el punto que más ayuda', () => {
             ...HELLO_WINDOWS,
             impresora: { ...HELLO_WINDOWS.impresora, nombre: 'pos' },
         })) as never
-        listarMock.mockResolvedValue(['POS'])
+        listarMock.mockResolvedValue([instalada('POS')])
 
         const p = await correr()
         expect(p.impresora.nivel).toBe('aviso')
@@ -139,7 +164,7 @@ describe('impresora de Windows — el punto que más ayuda', () => {
             ...HELLO_WINDOWS,
             impresora: { ...HELLO_WINDOWS.impresora, nombre: 'POS ' },
         })) as never
-        listarMock.mockResolvedValue(['POS'])
+        listarMock.mockResolvedValue([instalada('POS')])
 
         const p = await correr()
         expect(p.impresora.nivel).toBe('error')
@@ -165,10 +190,106 @@ describe('impresora de Windows — el punto que más ayuda', () => {
 
     it('si no se puede preguntar a Windows, lo dice sin acusar a la impresora', async () => {
         listarMock.mockRejectedValue(new Error('PowerShell no está disponible'))
-        const p = await correr()
+        const r = await correrEntero()
+        const p = Object.fromEntries(r.puntos.map(x => [x.clave, x]))
 
         expect(p.impresora.nivel).toBe('desconocido')
         expect(p.impresora.queHacer).toMatch(/prueba de impresión/)
+        // «No se pudo preguntar» NO es «no hay impresoras»: la página tiene
+        // que poder distinguirlo, así que se manda null y no [].
+        expect(r.impresoras).toBeNull()
+        expect(r.errorImpresoras).toMatch(/PowerShell/)
+    })
+
+    it('la lista viaja SIEMPRE, también cuando todo está en verde', async () => {
+        // Antes solo aparecía si algo fallaba, y era justo cuando menos
+        // falta hacía: quien está montando la estación necesita copiar el
+        // nombre exacto precisamente cuando todavía no hay ningún error.
+        listarMock.mockResolvedValue([instalada('POS'), instalada('Microsoft Print to PDF')])
+        const r = await correrEntero()
+
+        expect(r.puntos.find(p => p.clave === 'impresora')?.nivel).toBe('ok')
+        expect(r.impresoras).toHaveLength(2)
+        expect(r.impresoraPedida).toBe('POS')
+    })
+})
+
+describe('«no existe» y «existe pero no puede imprimir» son dos fallos distintos', () => {
+    beforeEach(() => { globalThis.fetch = vi.fn(() => respuesta(HELLO_WINDOWS)) as never })
+
+    it('una impresora EN PAUSA sale en rojo, no en verde por tener el nombre bien', async () => {
+        // Este es el caso que antes se perdía entero: el nombre coincide,
+        // así que salía «todo bien», y sin embargo el spooler acepta los
+        // boletos, el sistema los marca impresos y no sale ni un papel.
+        listarMock.mockResolvedValue([instalada('POS', {
+            estado: 'pausa', estadoCrudo: 'Paused',
+            estadoTexto: 'EN PAUSA. Windows le acepta los boletos pero no imprime',
+        })])
+
+        const p = await correr()
+        expect(p.impresora.nivel).toBe('error')
+        expect(p.impresora.resumen).toMatch(/existe/)
+        expect(p.impresora.resumen).toMatch(/PAUSA/)
+        // Y no se puede confundir con «no existe»: lo que hay que hacer es
+        // otra cosa completamente distinta.
+        expect(p.impresora.queHacer).not.toMatch(/no existe/)
+        expect(p.impresora.queHacer).toMatch(/reanud/i)
+    })
+
+    it('una impresora sin conexión culpa a la impresora, no al nombre', async () => {
+        listarMock.mockResolvedValue([instalada('POS', {
+            estado: 'sin-conexion', estadoCrudo: 'Offline', estadoTexto: 'Sin conexión',
+        })])
+
+        const p = await correr()
+        expect(p.impresora.nivel).toBe('error')
+        expect(p.impresora.resumen).toMatch(/sin conexión/i)
+        expect(p.impresora.queHacer).toMatch(/nombre está bien/)
+    })
+
+    it('sin papel o atascada también es rojo, con el motivo de Windows', async () => {
+        listarMock.mockResolvedValue([instalada('POS', {
+            estado: 'error', estadoCrudo: 'PaperOut', estadoTexto: 'Se quedó sin papel',
+        })])
+
+        const p = await correr()
+        expect(p.impresora.nivel).toBe('error')
+        expect(p.impresora.resumen).toMatch(/sin papel/i)
+    })
+
+    it('la pausa manda por encima de una diferencia de mayúsculas', async () => {
+        // Las mayúsculas son un aviso porque no impiden imprimir. La pausa
+        // sí lo impide, así que es lo que hay que enseñar.
+        globalThis.fetch = vi.fn(() => respuesta({
+            ...HELLO_WINDOWS,
+            impresora: { ...HELLO_WINDOWS.impresora, nombre: 'pos' },
+        })) as never
+        listarMock.mockResolvedValue([instalada('POS', {
+            estado: 'pausa', estadoCrudo: 'Paused', estadoTexto: 'EN PAUSA',
+        })])
+
+        const p = await correr()
+        expect(p.impresora.nivel).toBe('error')
+        expect(p.impresora.resumen).toMatch(/PAUSA/)
+    })
+
+    it('un estado que Windows describe raro es aviso, no error: nada dice que esté roto', async () => {
+        listarMock.mockResolvedValue([instalada('POS', {
+            estado: 'desconocido', estadoCrudo: 'AlgoQueNadieHaVisto',
+            estadoTexto: 'Windows dice «AlgoQueNadieHaVisto»',
+        })])
+
+        const p = await correr()
+        expect(p.impresora.nivel).toBe('aviso')
+    })
+
+    it('menciona los trabajos que ya están esperando en la cola de esa impresora', async () => {
+        listarMock.mockResolvedValue([instalada('POS', {
+            estado: 'pausa', estadoCrudo: 'Paused', estadoTexto: 'EN PAUSA', enCola: 3,
+        })])
+
+        const p = await correr()
+        expect(p.impresora.queHacer).toContain('3 trabajo')
     })
 })
 

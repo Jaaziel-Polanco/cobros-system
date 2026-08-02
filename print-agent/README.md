@@ -168,19 +168,83 @@ agente lo anota en `agente.log` y sigue trabajando.
 |---|---|
 | Servidor de cobros | Esta PC no llega al sistema. Es red o `API_URL`. El agente reintenta solo; en cuanto vuelva, los boletos pendientes salen sin que nadie haga nada. |
 | Token de esta estación | El sistema rechaza el token. Hay que pedir uno nuevo en `Estaciones → Regenerar token`. **Cuando está en verde, dice a qué estación y sucursal pertenece:** es la forma de darse cuenta de que se instaló el token de otra tienda. |
-| Impresora | La impresora que pide el servidor no existe en esta PC (o, si es de red, no contesta). |
+| Impresora | La impresora que pide el servidor no existe en esta PC, o existe pero no está en condiciones de imprimir (en pausa, sin conexión, sin papel). O, si es de red, no contesta. |
 | Contacto y última impresión | Cuándo fue la última vez que el servidor contestó y cuándo salió el último boleto. |
 
-El punto de la impresora es el que más ahorra tiempo. El nombre de la
-impresora **lo manda el servidor**, no se escribe en esta PC: si no
-coincide, la página **enseña la lista de las impresoras que sí están
-instaladas aquí**, para que se vea de un golpe que el sistema dice `POS` y
-en esta PC se llama `POS-58`.
+El punto de la impresora es el que más ahorra tiempo, y distingue **dos
+cosas que se parecen y se arreglan en sitios distintos**:
+
+- **«No existe.»** El nombre de la impresora **lo manda el servidor**, no se
+  escribe en esta PC. Se arregla en `Estaciones`, en el sistema, escribiendo
+  el nombre bien.
+- **«Existe, pero está en pausa / sin conexión / sin papel.»** El nombre está
+  bien y no hay nada que tocar en el sistema: se arregla aquí, en la propia
+  PC. Esto es lo más traicionero que hay en un mostrador, porque **con la
+  impresora en pausa Windows acepta los boletos igual y el sistema los da por
+  impresos** — y no sale ni uno.
 
 Ojo con un detalle que confunde: a Windows **las mayúsculas le dan igual**
 (`pos` abre la impresora `POS` y los boletos salen), pero **los espacios
 no** (`POS ` con un espacio al final falla). Por eso una diferencia de
 mayúsculas sale como aviso amarillo y no como error: no hay nada roto.
+
+**Impresoras de esta PC.** La lista completa, **siempre visible** (no solo
+cuando algo falla), con el estado de cada una, su puerto, su controlador y
+cuál es la predeterminada de Windows. Cada fila tiene un botón **Copiar
+nombre exacto**: ese nombre hay que escribirlo tal cual en `Estaciones` al
+montar la caja, y transcribirlo a ojo es justo como se cuela un espacio de
+más que después nadie ve.
+
+Son las impresoras que ve **la cuenta de Windows con la que corre el
+agente**, que no siempre son las mismas que ves tú al abrir «Impresoras y
+escáneres» (ver el aviso de la pestaña «Log on» de NSSM, más arriba). Si la
+lista sale vacía, ese es el diagnóstico: la impresora está instalada para
+otro usuario.
+
+Dos cosas que Windows cuenta a medias y que la página junta: el estado que
+da `Get-Printer` **no** refleja la casilla «Usar impresora sin conexión», así
+que se lee además de `Win32_Printer` y se enseña como sin conexión. Y si no
+se puede preguntar a Windows, la página lo dice con esas palabras: **«no se
+pudo preguntar» no es «no hay impresoras»**, y el agente sigue imprimiendo
+igual mientras tanto.
+
+**La cola de Windows.** Los trabajos que están esperando en el *spooler* de
+esa impresora. Es la pantalla que resuelve el fallo más difícil de explicar
+por teléfono: **el sistema dice «impreso» y el cliente no tiene su boleto.**
+Pasa porque en una estación `windows` el agente entrega los bytes al spooler
+y eso es todo lo que puede confirmar (ver el apartado 5); si el trabajo se
+atasca ahí, el agente ya dijo que sí.
+
+- Un trabajo que lleva más de dos minutos sin salir se marca **atascado**,
+  aunque Windows lo siga dando por normal — con la *impresora* en pausa, el
+  *trabajo* figura como «Normal», así que mirar solo su estado engaña.
+- Si la impresora está en pausa o sin conexión, se avisa arriba de la tabla:
+  **no hay que cancelar nada**, en cuanto se arregle sale todo solo.
+- **Cancelar** está para lo que ya no sirve. Pide confirmación y queda
+  escrito en `agente.log`, porque tira papel a la basura de un boleto que el
+  sistema ya tiene como impreso: cancelarlo aquí no lo devuelve a la cola del
+  sistema ni avisa a nadie.
+
+**Pausar el agente.** Para cambiar el rollo de papel o destrabar la
+impresora sin que los boletos fallen. En pausa el agente **deja de pedir
+trabajos al servidor**: los boletos que se generen se quedan pendientes en el
+sistema, con sus intentos intactos, y salen todos solos al reanudar. Si se
+pulsa con un boleto a medio imprimir, ese termina y los que quedaran del
+mismo lote vuelven a la cola sin imprimirse.
+
+La pausa se ve desde lejos —cartel grande, la página entera enmarcada en
+ámbar y el título de la pestaña cambiado a `⏸ EN PAUSA`, que se lee aunque la
+ventana esté detrás de otra— y cada cinco minutos deja una línea en
+`agente.log` diciendo cuánto lleva parada. Dos cosas más que conviene saber:
+
+- Mientras esté en pausa, en la pantalla **Estaciones** esta caja va a
+  aparecer como desconectada al cabo de un rato. Es la verdad: no está
+  tomando trabajos. Se prefiere eso a mandar un latido de mentira y dejar la
+  estación en verde mientras los boletos se acumulan.
+- **La pausa no se guarda en disco.** Si alguien la deja puesta y se va,
+  reiniciar el agente o prender la PC al día siguiente la quita. Una tienda
+  que amanece sin poder imprimir por una pausa de ayer es mucho peor que una
+  pausa que se pierde.
 
 **Prueba de impresión.** Un botón que manda una hoja a la impresora. Que
 salga papel es la única prueba que convence.
@@ -199,9 +263,48 @@ Lo que esta hoja **no** comprueba es el diseño de la tirilla, que vive en el
 servidor. Para el recorrido completo de punta a punta sigue estando el botón
 **Imprimir página de prueba** de la pantalla `Estaciones`.
 
+#### Por qué no hay un botón de «reimprimir el último boleto»
+
+Se pide mucho en un mostrador y aquí no está, a propósito.
+
+El agente sí podría volver a mandar los bytes a la impresora, pero **el
+servidor no se enteraría**: `veces_impreso` de ese boleto se quedaría como
+estaba, no habría ningún evento en el historial del cliente, y en la calle
+habría dos papeles con el mismo número de rifa sin rastro de que existan
+dos. Además, el segundo papel saldría **sin la marca `***** COPIA *****`**,
+que es exactamente lo que la distingue del original. Un contador que miente
+es el fallo que este módulo ya ha tenido que matar varias veces —el `ack`
+que reimprimía tras un fallo de red, el `ticket_id` prestado que inflaba
+`veces_impreso` de otro cliente— y no vale la pena reintroducirlo por un
+botón.
+
+**Para volver a sacar un boleto: desde el sistema, en el perfil del
+cliente.** Ese camino encola un trabajo de verdad, lo cuenta y lo marca como
+copia. La página lo dice donde toca (en la prueba de impresión y en la cola
+de Windows), para que nadie tenga que preguntarse por qué falta el botón.
+
+Lo que sí resuelve esta página del mismo problema: **ver dónde se quedó el
+boleto** (la cola de Windows) y **por qué no salió** (el estado de la
+impresora). Casi siempre no hay que reimprimir nada — quitar la pausa y el
+papel sale solo.
+
 **Actividad reciente.** Los últimos trabajos con la hora, el resultado y, si
 falló, el error tal cual lo devolvió Windows o la red. Se guarda en memoria:
 al reiniciar el agente se borra. El histórico completo está en `agente.log`.
+
+Un resultado que solo sale aquí: **`devuelto`**, un boleto que el agente
+tenía reclamado y no llegó a imprimir porque se pausó en medio. No es un
+error (no hay nada roto) ni un descarte (el boleto no se perdió): volvió a la
+cola del sistema y sale solo al reanudar.
+
+**Registro (`agente.log`).** Las últimas líneas se ven en la propia página y
+el archivo entero se descarga con un botón, para no tener que buscarlo en el
+disco mientras alguien espera al teléfono. Al lado hay un tercer botón,
+**Copiar informe para soporte**, que copia al portapapeles un texto plano con
+todo lo que se pregunta siempre —qué estación es, qué impresora pide el
+servidor, cómo la ve Windows, qué hay atascado en la cola y las últimas 60
+líneas del registro— listo para pegar en el chat. El token nunca aparece
+entero, ahí tampoco.
 
 ### Cambiar la configuración desde la página
 
@@ -263,8 +366,11 @@ Esto es importante y las dos conexiones NO garantizan lo mismo:
 
   **Si un boleto figura como impreso en el sistema pero el cliente nunca
   lo recibió, y la estación es de tipo `windows`, revisa la cola de
-  impresión de Windows** (`Configuración → Impresoras y escáneres → [la
-  impresora] → Abrir cola`). Lo más probable es encontrar el trabajo ahí
+  impresión de Windows.** La forma rápida es abrir la página de
+  diagnóstico (apartado 4) y mirar **La cola de Windows**, que enseña lo
+  mismo sin salir de ahí y además dice si la impresora está en pausa o sin
+  conexión; a mano es `Configuración → Impresoras y escáneres → [la
+  impresora] → Abrir cola`. Lo más probable es encontrar el trabajo ahí
   atascado, con la impresora apagada, sin papel o en pausa. El agente
   intenta avisar de esto por su cuenta —si detecta un trabajo así en la
   cola justo después de imprimir, escribe una línea `AVISO:` en
@@ -284,7 +390,12 @@ Esto es importante y las dos conexiones NO garantizan lo mismo:
   esté en la misma red que esta PC.
 - **Trabajo marcado "impreso" pero el boleto no salió (solo en tipo
   `windows`)**: ver el apartado anterior — revisa la cola de impresión de
-  Windows.
+  Windows en la página de diagnóstico.
+- **No sale ningún boleto y no hay ningún error en ninguna parte**: mira la
+  página de diagnóstico. Las tres causas mudas, por orden de frecuencia, son
+  la impresora **en pausa** en Windows, el **agente en pausa** (el cartel
+  ámbar es imposible de no ver) y el `MODO_SIMULADOR` puesto. Las tres dejan
+  al sistema diciendo que todo va bien.
 - **Impresora `windows` no imprime nada y da "no se pudo abrir la
   impresora"**: lo más común es que el servicio esté corriendo con una
   cuenta de Windows distinta de la que tiene la impresora instalada (ver

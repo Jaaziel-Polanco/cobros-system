@@ -4,7 +4,11 @@ import path from 'node:path'
 const NIVELES = { debug: 10, info: 20, warn: 30, error: 40 } as const
 type Nivel = keyof typeof NIVELES
 
-const ARCHIVO = path.join(__dirname, '..', 'agente.log')
+/** Dónde vive el registro. Se exporta porque la interfaz local lo enseña y
+ *  lo deja descargar, y no puede haber dos sitios que digan dónde está. */
+export const RUTA_LOG = path.join(__dirname, '..', 'agente.log')
+
+const ARCHIVO = RUTA_LOG
 const MAX_BYTES = 5 * 1024 * 1024
 
 let umbral: number = NIVELES.info
