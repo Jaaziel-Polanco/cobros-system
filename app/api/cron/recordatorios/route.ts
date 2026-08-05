@@ -9,6 +9,12 @@ import {
 } from '@/lib/utils/cobranza-engine'
 import { WebhookPayload, EtapaCobranza, FrecuenciaPago } from '@/lib/types'
 import { verificarCronSecret } from '@/lib/utils/auth'
+import {
+    leerTodasLasFilas, encadenable, comoLote, comoConteo,
+    type ConsultaEncadenable,
+} from '@/lib/supabase/paginacion'
+import { leerUltimoPagoPorDeuda } from '@/lib/supabase/ultimo-pago'
+import { leerUltimoEnvioPorDeuda } from '@/lib/supabase/ultimo-envio'
 
 const BATCH_SIZE = 25
 const WEBHOOK_TIMEOUT_MS = 15_000
@@ -79,63 +85,81 @@ export async function GET(req: NextRequest) {
         await supabase.rpc('actualizar_dias_atraso')
 
         // 2. Obtener deudas activas — limitar envios_log a los últimos 5 por deuda
-        const { data: deudas, error: deudasError } = await supabase
-            .from('deudas')
-            .select(`
-                *,
-                cliente:clientes(*),
-                agente:profiles(id, full_name),
-                configuracion:configuracion_recordatorio(*)
-            `)
-            .eq('estado', 'activo')
-            .eq('pausado', false)
-            .neq('etapa', 'saldado')
+        //
+        // PAGINADA. Este `select` alimenta el bucle que manda los
+        // recordatorios: toda deuda que no salga de aquí simplemente no
+        // recibe ninguno, y PostgREST corta en 1000 filas sin error ni
+        // cabecera (ver lib/supabase/paginacion.ts). Hoy son 741 y por tanto
+        // no corta, pero es el mismo camino del dinero que el mapa de pagos
+        // de abajo, que sí está cortando, y la diferencia entre los dos es
+        // sólo cuestión de tiempo. `leerTodasLasFilas` lanza antes que
+        // devolver una lista corta: preferimos un cron que falle a la vista
+        // que un cron que deje de cobrar a un puñado de deudas en silencio.
+        //
+        // Se pagina por `id` (único). Antes no había `order`, así que el
+        // orden del bucle ya era el que quisiera Postgres; ahora es estable.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        type FilaDeuda = { id: string } & Record<string, any>
 
-        if (deudasError) throw deudasError
+        const filtrarDeudas = (consulta: ConsultaEncadenable) =>
+            consulta
+                .eq('estado', 'activo')
+                .eq('pausado', false)
+                .neq('etapa', 'saldado')
+
+        const deudas = await leerTodasLasFilas<FilaDeuda>({
+            etiqueta: 'las deudas activas del cron de recordatorios',
+            clave: 'id',
+            lote: (cursor, limite) => {
+                const base = filtrarDeudas(encadenable(
+                    supabase.from('deudas').select(`
+                        *,
+                        cliente:clientes(*),
+                        agente:profiles(id, full_name),
+                        configuracion:configuracion_recordatorio(*)
+                    `),
+                ))
+                return comoLote<FilaDeuda>(
+                    (cursor ? base.gt('id', cursor) : base).order('id').limit(limite),
+                )
+            },
+            contar: () => comoConteo(filtrarDeudas(
+                encadenable(supabase.from('deudas').select('id', { count: 'exact', head: true })),
+            )),
+        })
 
         // Último envío por deuda (por tipo_destino) — vía RPC con DISTINCT ON.
         // ANTES: .limit(deudaIds.length * 5) era un límite GLOBAL, no por grupo, así que
         // las deudas chatty acaparaban el cupo y el último envío de otras quedaba fuera
         // → ultimoEnvioCliente=null → el cron reenviaba 2-3 veces al día.
-        const deudaIds = deudas?.map(d => d.id) ?? []
-        const ultimoEnvioClientePorDeuda = new Map<string, string>()
-
-        if (deudaIds.length > 0) {
-            type UltimoEnvioRow = {
-                deuda_id: string
-                tipo_destino: string
-                ultimo_sent_at: string
-            }
-            const { data, error: ultimosErr } = await supabase.rpc(
-                'ultimos_envios_por_deuda',
-                { p_deuda_ids: deudaIds }
-            )
-            if (ultimosErr) {
-                console.error('[CRON] Error obteniendo últimos envíos:', ultimosErr.message)
-            }
-            const ultimos = (data ?? []) as UltimoEnvioRow[]
-            for (const r of ultimos) {
-                if (r.tipo_destino === 'cliente') {
-                    ultimoEnvioClientePorDeuda.set(r.deuda_id, r.ultimo_sent_at)
-                }
-            }
-        }
+        //
+        // FILTRADO Y PAGINADO EN `leerUltimoEnvioPorDeuda`. El RPC arregló
+        // aquel límite global, pero el resultado de un RPC **también** está
+        // sujeto al `max-rows` de 1000 de PostgREST: 200, `error: null` y
+        // menos filas. Este mapa es lo único que impide reenviar, así que un
+        // recorte aquí significa un segundo WhatsApp a quien ya recibió el
+        // aviso — el defecto exacto que el RPC vino a corregir.
+        // Ver lib/supabase/ultimo-envio.ts.
+        //
+        // El filtro por 'cliente' pasa a resolverse en la base: antes se
+        // traían también los envíos a referencias para descartarlos aquí,
+        // gastando cupo con filas que nadie usa.
+        const deudaIds = deudas.map(d => d.id)
+        const ultimoEnvioClientePorDeuda = await leerUltimoEnvioPorDeuda(
+            supabase, deudaIds, 'cliente',
+        )
 
         // 2b. Cargar pagos recientes para determinar si ya pagó este período
-        let pagosPorDeuda = new Map<string, string>()
-        if (deudaIds.length > 0) {
-            const { data: pagosRecientes } = await supabase
-                .from('pagos')
-                .select('deuda_id, created_at')
-                .in('deuda_id', deudaIds)
-                .order('created_at', { ascending: false })
-
-            pagosRecientes?.forEach(p => {
-                if (!pagosPorDeuda.has(p.deuda_id)) {
-                    pagosPorDeuda.set(p.deuda_id, p.created_at)
-                }
-            })
-        }
+        //
+        // PAGINADO Y AGREGADO EN `leerUltimoPagoPorDeuda`. Este era el peor de
+        // los cortes silenciosos del proyecto y estaba causando daño en
+        // producción: 1905 pagos de deudas activas recortados a 1000, y como
+        // el `.order('created_at', desc)` de antes se quedaba con los 1000 más
+        // recientes GLOBALES, las 82 deudas cuyo último pago caía fuera de esa
+        // ventana no aparecían en el mapa. No como "pagó hace mucho": como
+        // **no ha pagado nunca**. A esos clientes se les mandaba el
+        // recordatorio de cobro habiendo pagado. Ver lib/supabase/ultimo-pago.ts.
+        const pagosPorDeuda = await leerUltimoPagoPorDeuda(supabase, deudaIds)
 
         // 3. Obtener plantillas activas
         const { data: plantillas } = await supabase
@@ -143,13 +167,30 @@ export async function GET(req: NextRequest) {
             .select('*')
             .eq('activo', true)
 
-        // 4. Obtener webhook activo
-        const { data: webhook } = await supabase
+        // 4. Obtener webhook activo de cobranza.
+        // El filtro por `evento` es obligatorio desde que la migración 05
+        // separó los webhooks de cobranza y de boletos: sin él, en cuanto
+        // hay un segundo webhook activo (el de boletos) esta consulta deja
+        // de poder decidir cuál fila devolver y Postgres responde
+        // PGRST116 ("Results contain 2 rows") en vez de una sola fila.
+        const { data: webhook, error: webhookError } = await supabase
             .from('webhooks')
             .select('*')
             .eq('activo', true)
+            .eq('evento', 'cobranza')
             .maybeSingle()
 
+        // Un error de consulta (p. ej. PGRST116 por más de un webhook activo
+        // sin este filtro) y "no hay webhook configurado" son fallos
+        // distintos: el primero es un bug/config inconsistente en la base,
+        // el segundo es un estado válido. Confundirlos bajo el mismo
+        // mensaje es justo lo que hizo pasar desapercibido este problema.
+        if (webhookError) {
+            return NextResponse.json(
+                { ok: false, message: `Error al buscar el webhook de cobranza: ${webhookError.message}` },
+                { status: 500 },
+            )
+        }
         if (!webhook) {
             return NextResponse.json({ ok: false, message: 'No hay webhook activo' })
         }

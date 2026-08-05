@@ -10,6 +10,7 @@
 !.yarn/releases
 !.yarn/versions
 
+/ssh.txt
 # testing
 /coverage
 
@@ -36,8 +37,11 @@ yarn-error.log*
 # vercel
 .vercel
 
-/supabase/migrations
-
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+.superpowers/
+
+# supabase temp / skills vendorizadas
+supabase/.temp/
+skills-lock.json

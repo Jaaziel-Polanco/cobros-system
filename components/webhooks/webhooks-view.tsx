@@ -12,6 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import {
     AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -22,11 +23,18 @@ import { cn } from '@/lib/utils'
 
 interface WebhooksViewProps { webhooks: Webhook[] }
 
+const EVENTO_OPTIONS: { value: 'cobranza' | 'ticket'; label: string; help: string }[] = [
+    { value: 'cobranza', label: 'Cobranza', help: 'Recordatorios automáticos de deuda enviados por el cron (preventivo, mora, recuperación, referencias).' },
+    { value: 'ticket', label: 'Boletos', help: 'Envío del boleto de sorteo al cliente por WhatsApp cuando se emite o reenvía un ticket.' },
+]
+
 function WebhookFormModal({ open, onClose, webhook }: { open: boolean; onClose: () => void; webhook?: Webhook }) {
     const [isPending, startTransition] = useTransition()
     const { register, handleSubmit, setValue, watch, reset, formState: { errors } } = useForm<WebhookFormData>({
         resolver: zodResolver(WebhookSchema),
-        defaultValues: webhook ? { nombre: webhook.nombre, url: webhook.url, descripcion: webhook.descripcion ?? '', activo: webhook.activo } : { activo: true },
+        defaultValues: webhook
+            ? { nombre: webhook.nombre, url: webhook.url, descripcion: webhook.descripcion ?? '', activo: webhook.activo, evento: webhook.evento }
+            : { activo: true, evento: 'cobranza' },
     })
 
     // Reset form when webhook prop changes (edit vs create)
@@ -38,6 +46,7 @@ function WebhookFormModal({ open, onClose, webhook }: { open: boolean; onClose: 
                     url: webhook.url,
                     descripcion: webhook.descripcion ?? '',
                     activo: webhook.activo,
+                    evento: webhook.evento,
                 })
             } else {
                 reset({
@@ -45,10 +54,13 @@ function WebhookFormModal({ open, onClose, webhook }: { open: boolean; onClose: 
                     url: '',
                     descripcion: '',
                     activo: true,
+                    evento: 'cobranza',
                 })
             }
         }
     }, [open, webhook, reset])
+
+    const eventoActual = watch('evento')
 
     const onSubmit = (data: WebhookFormData) => {
         startTransition(async () => {
@@ -83,6 +95,26 @@ function WebhookFormModal({ open, onClose, webhook }: { open: boolean; onClose: 
                     <div className="space-y-1.5">
                         <Label className="text-slate-300">Descripción</Label>
                         <Textarea className="bg-slate-800 border-white/10 text-white resize-none" rows={2} {...register('descripcion')} />
+                    </div>
+                    <div className="space-y-1.5">
+                        <Label className="text-slate-300">Evento *</Label>
+                        <Select
+                            value={eventoActual}
+                            onValueChange={v => setValue('evento', v as WebhookFormData['evento'])}
+                        >
+                            <SelectTrigger className="bg-slate-800 border-white/10 text-white">
+                                <SelectValue placeholder="Seleccionar evento..." />
+                            </SelectTrigger>
+                            <SelectContent className="bg-slate-800 border-white/10 text-white">
+                                {EVENTO_OPTIONS.map(e => (
+                                    <SelectItem key={e.value} value={e.value}>{e.label}</SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                        <p className="text-xs text-slate-500">
+                            {EVENTO_OPTIONS.find(e => e.value === eventoActual)?.help}
+                        </p>
+                        {errors.evento && <p className="text-xs text-red-400">{errors.evento.message}</p>}
                     </div>
                     <div className="flex items-center gap-3">
                         <Switch id="wh-activo" checked={!!watch('activo')} onCheckedChange={v => setValue('activo', v)} />
@@ -293,6 +325,10 @@ export function WebhooksView({ webhooks }: WebhooksViewProps) {
                                             <h3 className="font-semibold text-white">{w.nombre}</h3>
                                             <span className={cn('text-xs font-medium', w.activo ? 'text-green-400' : 'text-slate-500')}>
                                                 {w.activo ? '● Activo' : '○ Inactivo'}
+                                            </span>
+                                            <span className={cn('text-xs px-1.5 py-0.5 rounded font-medium',
+                                                w.evento === 'ticket' ? 'bg-indigo-500/20 text-indigo-300' : 'bg-sky-500/20 text-sky-300')}>
+                                                {w.evento === 'ticket' ? 'Boletos' : 'Cobranza'}
                                             </span>
                                         </div>
                                         <p className="text-xs text-slate-500 font-mono truncate mt-0.5">{w.url}</p>

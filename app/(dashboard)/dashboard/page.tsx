@@ -1,59 +1,11 @@
-import { createClient } from '@/lib/supabase/server'
-import { redirect } from 'next/navigation'
 import { CreditCard, Users, AlertTriangle, CheckCircle, TrendingDown, Send, Clock, TrendingUp, Zap } from 'lucide-react'
 import { formatMonto } from '@/lib/utils/template-renderer'
-
-function hoyRD(): string {
-    return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Santo_Domingo' })
-}
-
-async function getDashboardData() {
-    const supabase = await createClient()
-
-    const [deudas, enviosHoy] = await Promise.all([
-        supabase
-            .from('deudas')
-            .select('etapa, estado, saldo_pendiente, monto_original, pausado')
-            .eq('estado', 'activo'),
-        supabase
-            .from('envios_log')
-            .select('id, estado')
-            .gte('sent_at', hoyRD()),
-    ])
-
-    const activas = deudas.data?.filter(d => d.estado === 'activo') ?? []
-    const totalCartera = activas.reduce((s, d) => s + Number(d.saldo_pendiente), 0)
-    const byEtapa = {
-        preventivo: activas.filter(d => d.etapa === 'preventivo').length,
-        mora_temprana: activas.filter(d => d.etapa === 'mora_temprana').length,
-        mora_alta: activas.filter(d => d.etapa === 'mora_alta').length,
-        recuperacion: activas.filter(d => d.etapa === 'recuperacion').length,
-    }
-
-    const enviados = enviosHoy.data?.filter(e => e.estado === 'enviado').length ?? 0
-    const erroresHoy = enviosHoy.data?.filter(e => e.estado === 'error').length ?? 0
-    const totalEnviosHoy = enviosHoy.data?.length ?? 0
-
-    return { totalCartera, activas: activas.length, byEtapa, enviados, erroresHoy, totalEnviosHoy }
-}
-
-async function getProximosVencimientos() {
-    const supabase = await createClient()
-    const en7dias = new Date()
-    en7dias.setDate(en7dias.getDate() + 7)
-
-    const { data } = await supabase
-        .from('deudas')
-        .select('id, fecha_corte, saldo_pendiente, etapa, cliente:clientes(nombre, apellido, telefono)')
-        .eq('estado', 'activo')
-        .lte('fecha_corte', en7dias.toISOString().split('T')[0])
-        .gte('fecha_corte', new Date().toISOString().split('T')[0])
-        .order('fecha_corte')
-        .limit(10)
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (data ?? []) as any[]
-}
+// Las dos lecturas vivían aquí. Se han movido a `lib/actions/dashboard.ts`
+// para paginarlas (alimentan la cartera total y los contadores del día, y
+// PostgREST las estaba dejando sin cortar sólo por poco) y, sobre todo,
+// para que pudieran tener pruebas: un `page.tsx` no puede exportar más que
+// el componente, así que aquí dentro eran inalcanzables.
+import { getDashboardData, getProximosVencimientos } from '@/lib/actions/dashboard'
 
 export default async function DashboardPage() {
     const [stats, proximos] = await Promise.all([getDashboardData(), getProximosVencimientos()])

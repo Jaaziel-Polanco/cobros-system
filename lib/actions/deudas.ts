@@ -5,6 +5,8 @@ import { revalidatePath } from 'next/cache'
 import { DeudaSchema, DeudaFormData } from '@/lib/validations/schemas'
 import { calcularDiasAtraso, getEtapaCobranza } from '@/lib/utils/cobranza-engine'
 import { intentarEnvioInmediato } from '@/lib/actions/envios'
+import { hoyRD } from '@/lib/utils/fecha-rd'
+import { leerUltimoPagoPorDeuda } from '@/lib/supabase/ultimo-pago'
 
 export async function getDeudas() {
     const supabase = await createClient()
@@ -144,12 +146,16 @@ export async function togglePausaDeuda(id: string, pausado: boolean) {
     revalidatePath('/cuentas')
 }
 
-export async function registrarPago(id: string, montoPago: number) {
+export async function registrarPago(id: string, montoPago: number, nota?: string) {
     const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
 
     const { data, error } = await supabase.rpc('registrar_pago_atomico', {
         p_deuda_id: id,
         p_monto_pago: montoPago,
+        p_periodo: hoyRD(),
+        p_nota: nota ?? null,
+        p_registrado_por: user?.id ?? null,
     })
 
     if (error) throw new Error(error.message)
@@ -157,7 +163,9 @@ export async function registrarPago(id: string, montoPago: number) {
 
     revalidatePath('/cuentas')
     revalidatePath('/dashboard')
-    return data
+    revalidatePath(`/clientes/${data.cliente_id}`)
+
+    return { pagoId: data.pago_id as string, clienteId: data.cliente_id as string }
 }
 
 export async function marcarPagoPeriodo(deudaId: string, periodo: string, nota?: string) {
@@ -166,68 +174,33 @@ export async function marcarPagoPeriodo(deudaId: string, periodo: string, nota?:
 
     const { data: deuda } = await supabase
         .from('deudas')
-        .select('*, cliente:clientes(id)')
+        .select('cuota_mensual')
         .eq('id', deudaId)
         .single()
 
     if (!deuda) throw new Error('Deuda no encontrada')
 
-    const montoPago = deuda.cuota_mensual ?? 0
+    const { data, error } = await supabase.rpc('registrar_pago_atomico', {
+        p_deuda_id: deudaId,
+        p_monto_pago: deuda.cuota_mensual ?? 0,
+        p_periodo: periodo,
+        p_nota: nota ?? null,
+        p_registrado_por: user?.id ?? null,
+        // "Marcar período pagado" puede avanzar fecha_corte sin dinero
+        // de por medio (deudas con monto pero sin cuota_mensual fija,
+        // p.ej. el botón "Pagó" del panel de pendientes). registrarPago()
+        // NO manda esta bandera: un pago por monto siempre debe ser > 0.
+        p_avanzar_sin_monto: true,
+    })
 
-    const { error: pagoError } = await supabase
-        .from('pagos')
-        .insert({
-            deuda_id: deudaId,
-            cliente_id: deuda.cliente_id,
-            monto: montoPago,
-            periodo,
-            registrado_por: user?.id,
-            nota: nota || null,
-        })
-
-    if (pagoError) throw new Error(pagoError.message)
-
-    if (deuda.monto_original > 0 && montoPago > 0) {
-        const result = await supabase.rpc('registrar_pago_atomico', {
-            p_deuda_id: deudaId,
-            p_monto_pago: montoPago,
-        })
-        if (result.error) throw new Error(result.error.message)
-        if (!result.data?.ok) throw new Error(result.data?.error ?? 'Error al registrar pago')
-    } else {
-        const { data: deudaActual } = await supabase
-            .from('deudas')
-            .select('fecha_corte, frecuencia_pago')
-            .eq('id', deudaId)
-            .single()
-
-        if (deudaActual) {
-            let nuevaFecha: string
-            const fc = new Date(deudaActual.fecha_corte + 'T00:00:00')
-            if (deudaActual.frecuencia_pago === 'semanal') {
-                fc.setDate(fc.getDate() + 7)
-                nuevaFecha = fc.toISOString().split('T')[0]
-            } else if (deudaActual.frecuencia_pago === 'quincenal') {
-                fc.setDate(fc.getDate() + 15)
-                nuevaFecha = fc.toISOString().split('T')[0]
-            } else {
-                fc.setMonth(fc.getMonth() + 1)
-                nuevaFecha = fc.toISOString().split('T')[0]
-            }
-
-            await supabase
-                .from('deudas')
-                .update({
-                    fecha_corte: nuevaFecha,
-                    dias_atraso: 0,
-                    etapa: 'preventivo',
-                })
-                .eq('id', deudaId)
-        }
-    }
+    if (error) throw new Error(error.message)
+    if (!data?.ok) throw new Error(data?.error ?? 'Error al registrar pago')
 
     revalidatePath('/cuentas')
     revalidatePath('/dashboard')
+    revalidatePath(`/clientes/${data.cliente_id}`)
+
+    return { pagoId: data.pago_id as string, clienteId: data.cliente_id as string }
 }
 
 export async function getPagosDeuda(deudaId: string) {
@@ -265,18 +238,16 @@ export async function getDeudasConPagosPendientes() {
     if (!deudas || deudas.length === 0) return []
 
     const deudaIds = deudas.map(d => d.id)
-    const { data: pagosRecientes } = await supabase
-        .from('pagos')
-        .select('deuda_id, created_at, periodo')
-        .in('deuda_id', deudaIds)
-        .order('created_at', { ascending: false })
 
-    const pagosMap = new Map<string, string>()
-    pagosRecientes?.forEach(p => {
-        if (!pagosMap.has(p.deuda_id)) {
-            pagosMap.set(p.deuda_id, p.created_at)
-        }
-    })
+    // Mismo defecto y misma corrección que el cron de recordatorios: este
+    // `select` sin paginar se quedaba con los 1000 pagos más recientes del
+    // conjunto, no con el último de cada deuda, así que las deudas cuyo
+    // último pago quedaba fuera de esa ventana salían del mapa y se
+    // trataban como impagadas. Aquí el efecto es que la deuda aparece en
+    // "pagos pendientes" habiendo cobrado. Ver lib/supabase/ultimo-pago.ts.
+    //
+    // La columna `periodo` se pedía y no se usaba; se ha dejado de pedir.
+    const pagosMap = await leerUltimoPagoPorDeuda(supabase, deudaIds)
 
     const hoy = new Date()
     hoy.setHours(0, 0, 0, 0)

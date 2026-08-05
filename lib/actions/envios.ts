@@ -6,6 +6,10 @@ import { revalidatePath } from 'next/cache'
 import { renderTemplate, formatMonto, formatFecha } from '@/lib/utils/template-renderer'
 import { WebhookPayload, EtapaCobranza } from '@/lib/types'
 import { debeEnviarPreventivo, normalizarConfiguracionRecordatorio } from '@/lib/utils/cobranza-engine'
+import {
+    leerTodasLasFilas, encadenable, comoLote, comoConteo,
+    type ConsultaEncadenable,
+} from '@/lib/supabase/paginacion'
 
 export async function getLogs(filters?: {
     clienteId?: string
@@ -97,6 +101,7 @@ export async function enviarRecordatorioManual(deudaId: string) {
         .from('webhooks')
         .select('*')
         .eq('activo', true)
+        .eq('evento', 'cobranza')
         .maybeSingle()
 
     if (!webhook) throw new Error('No hay webhook activo configurado')
@@ -259,6 +264,7 @@ export async function intentarEnvioInmediato(deudaId: string): Promise<void> {
             .from('webhooks')
             .select('*')
             .eq('activo', true)
+            .eq('evento', 'cobranza')
             .maybeSingle()
 
         if (!webhook) {
@@ -344,28 +350,93 @@ export async function intentarEnvioInmediato(deudaId: string): Promise<void> {
     }
 }
 
+/**
+ * Manda la primera notificación a las deudas activas que nunca han recibido
+ * ninguna.
+ *
+ * Hoy **no la llama nadie** (comprobado en todo el repo). Se corrige igual
+ * porque de las lecturas sin paginar que quedaban en el proyecto era, con
+ * diferencia, la de peor consecuencia si alguien la conectase a un botón.
+ *
+ * Las dos lecturas se paginan:
+ *
+ *  - `deudas` activas (741) decide a quién se mira siquiera. Truncada,
+ *    ignoraría deudas en silencio y devolvería `enviados` sin ningún error.
+ *  - `envios_log` es la que importa. Filtrada a las deudas activas y a
+ *    `tipo_destino='cliente'` son **20 403 filas** en producción, cortadas a
+ *    1000. La lógica de abajo es "si NO estás en el conjunto, te mando":
+ *    un conjunto recortado significa cientos de deudas que sí fueron
+ *    notificadas apareciendo como si nunca lo hubieran sido, y una segunda
+ *    andanada de WhatsApp a esos clientes. Es el único sitio del barrido
+ *    donde el corte se traduce directamente en mensajes duplicados.
+ *
+ * 20 403 filas para deducir un conjunto de 729 deudas es un despilfarro, y
+ * lo suyo sería un `SELECT DISTINCT deuda_id` en la base. No se hace aquí
+ * porque exige DDL (los agregados de PostgREST están desactivados en este
+ * proyecto: `PGRST123`), y porque a esta función, que no la llama nadie, la
+ * corrección barata y correcta le sobra. Queda anotado.
+ */
 export async function enviarPendientesSinNotificacion(): Promise<{ enviados: number; errores: number }> {
     const supabase = await createClient()
 
-    const { data: deudasActivas, error } = await supabase
-        .from('deudas')
-        .select('id')
-        .eq('estado', 'activo')
-        .eq('pausado', false)
-        .neq('etapa', 'saldado')
+    const filtrarDeudas = (consulta: ConsultaEncadenable) =>
+        consulta
+            .eq('estado', 'activo')
+            .eq('pausado', false)
+            .neq('etapa', 'saldado')
 
-    if (error || !deudasActivas) return { enviados: 0, errores: 0 }
+    let deudasActivas: { id: string }[]
+    try {
+        deudasActivas = await leerTodasLasFilas<{ id: string }>({
+            etiqueta: 'las deudas activas sin notificación',
+            clave: 'id',
+            lote: (cursor, limite) => {
+                const base = filtrarDeudas(encadenable(supabase.from('deudas').select('id')))
+                return comoLote<{ id: string }>(
+                    (cursor ? base.gt('id', cursor) : base).order('id').limit(limite),
+                )
+            },
+            contar: () => comoConteo(filtrarDeudas(
+                encadenable(supabase.from('deudas').select('id', { count: 'exact', head: true })),
+            )),
+        })
+    } catch (e) {
+        console.error('[ENVIO_PENDIENTES] No se pudieron leer las deudas activas:', e)
+        return { enviados: 0, errores: 0 }
+    }
 
     const deudaIds = deudasActivas.map(d => d.id)
     if (deudaIds.length === 0) return { enviados: 0, errores: 0 }
 
-    const { data: enviosExistentes } = await supabase
-        .from('envios_log')
-        .select('deuda_id')
-        .in('deuda_id', deudaIds)
-        .eq('tipo_destino', 'cliente')
+    const filtrarEnvios = (consulta: ConsultaEncadenable) =>
+        consulta.in('deuda_id', deudaIds).eq('tipo_destino', 'cliente')
 
-    const deudasConEnvio = new Set(enviosExistentes?.map(e => e.deuda_id) ?? [])
+    let enviosExistentes: { id: string; deuda_id: string }[]
+    try {
+        enviosExistentes = await leerTodasLasFilas<{ id: string; deuda_id: string }>({
+            etiqueta: 'los envíos ya hechos a esas deudas',
+            clave: 'id',
+            lote: (cursor, limite) => {
+                const base = filtrarEnvios(
+                    encadenable(supabase.from('envios_log').select('id, deuda_id')),
+                )
+                return comoLote<{ id: string; deuda_id: string }>(
+                    (cursor ? base.gt('id', cursor) : base).order('id').limit(limite),
+                )
+            },
+            contar: () => comoConteo(filtrarEnvios(
+                encadenable(supabase.from('envios_log').select('id', { count: 'exact', head: true })),
+            )),
+        })
+    } catch (e) {
+        // Sin la lista COMPLETA de envíos previos no se puede decidir a
+        // quién no se ha escrito todavía. Ante la duda no se manda nada:
+        // el fallo caro aquí es el mensaje duplicado, no el que falta.
+        console.error('[ENVIO_PENDIENTES] Lista de envíos incompleta, no se envía nada:', e)
+        return { enviados: 0, errores: 0 }
+    }
+
+    const deudasConEnvio = new Set(enviosExistentes.map(e => e.deuda_id))
     const deudasSinEnvio = deudaIds.filter(id => !deudasConEnvio.has(id))
 
     let enviados = 0

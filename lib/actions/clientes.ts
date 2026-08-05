@@ -3,21 +3,59 @@
 import { createClient } from '@/lib/supabase/server'
 import { revalidatePath } from 'next/cache'
 import { ClienteSchema, ClienteFormData } from '@/lib/validations/schemas'
+import {
+    leerTodasLasFilas, encadenable, comoLote, comoConteo,
+    type ConsultaEncadenable,
+} from '@/lib/supabase/paginacion'
 
+/**
+ * Todos los clientes activos, para `/clientes`.
+ *
+ * PAGINADA. Este `select` estaba cortado por el tope de 1000 filas de
+ * PostgREST: 1326 clientes activos en producción, de los que **326 no
+ * aparecían en la lista**, sin error ni aviso de ninguna clase. Un cliente
+ * que no aparece en la pantalla de clientes no se gestiona y no se cobra.
+ *
+ * Se pagina por `id` (único; `created_at` no lo es y no sirve de cursor). El
+ * orden de pantalla —más reciente primero— se aplica abajo sobre la lista ya
+ * completa, que es donde tiene sentido: ordenar cada lote por separado no
+ * ordena el conjunto.
+ */
 export async function getClientes() {
     const supabase = await createClient()
-    const { data, error } = await supabase
-        .from('clientes')
-        .select(`
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    type FilaCliente = { id: string; created_at: string } & Record<string, any>
+
+    const filtrar = (consulta: ConsultaEncadenable) => consulta.eq('activo', true)
+
+    const clientes = await leerTodasLasFilas<FilaCliente>({
+        etiqueta: 'los clientes activos',
+        clave: 'id',
+        lote: (cursor, limite) => {
+            const base = filtrar(encadenable(
+                supabase.from('clientes').select(`
       *,
       agente:profiles(id, full_name, rol),
       deudas(id, etapa, estado, saldo_pendiente, fecha_corte, dias_atraso)
-    `)
-        .eq('activo', true)
-        .order('created_at', { ascending: false })
+    `),
+            ))
+            return comoLote<FilaCliente>(
+                (cursor ? base.gt('id', cursor) : base).order('id').limit(limite),
+            )
+        },
+        contar: () => comoConteo(filtrar(
+            encadenable(supabase.from('clientes').select('id', { count: 'exact', head: true })),
+        )),
+    })
 
-    if (error) throw new Error(error.message)
-    return data
+    return clientes.sort((a, b) => {
+        const ta = Date.parse(a.created_at), tb = Date.parse(b.created_at)
+        if (ta !== tb) return tb - ta
+        // Desempate estable por `id`, para que dos clientes creados en el
+        // mismo instante no bailen de orden entre recargas.
+        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+    })
 }
 
 export async function getClienteById(id: string) {

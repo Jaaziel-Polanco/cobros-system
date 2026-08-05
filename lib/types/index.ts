@@ -16,6 +16,11 @@ export interface PermisosAgente {
     eliminar_cuentas: boolean
     registrar_pagos: boolean
     crear_cuentas: boolean
+    ver_tickets: boolean
+    generar_ticket_manual: boolean
+    imprimir_ticket: boolean
+    ver_sorteos: boolean
+    realizar_sorteo: boolean
 }
 
 export type EtapaCobranza =
@@ -41,6 +46,9 @@ export type EtapaPlantilla =
     | 'mora_alta'
     | 'recuperacion'
     | 'referencia'
+    | 'ticket'
+
+export type EventoWebhook = 'cobranza' | 'ticket'
 
 // ─── ENTIDADES PRINCIPALES ────────────────────────────────────
 
@@ -50,6 +58,7 @@ export interface Profile {
     rol: Rol
     activo: boolean
     permisos?: PermisosAgente | null   // null before migration, populated after
+    sucursal_id?: string | null
     created_at: string
     updated_at: string
 }
@@ -65,6 +74,11 @@ export const DEFAULT_PERMISOS_AGENTE: PermisosAgente = {
     eliminar_cuentas: false,
     registrar_pagos: true,
     crear_cuentas: true,
+    ver_tickets: true,
+    generar_ticket_manual: true,
+    imprimir_ticket: true,
+    ver_sorteos: false,
+    realizar_sorteo: false,
 }
 
 export interface Cliente {
@@ -168,6 +182,7 @@ export interface Webhook {
     descripcion?: string
     activo: boolean
     headers: Record<string, string>
+    evento: EventoWebhook
     created_at: string
     updated_at: string
 }
@@ -303,3 +318,6 @@ export const FRECUENCIA_DIAS: Record<FrecuenciaPago, number> = {
     quincenal: 15,
     semanal: 7,
 }
+
+// ─── MÓDULO DE BOLETERÍA ─────────────────────────────────────
+export * from './tickets'

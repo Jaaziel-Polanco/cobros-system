@@ -3,6 +3,7 @@
 import { useState, useTransition, useCallback, useEffect } from 'react'
 import { toast } from 'sonner'
 import { marcarPagoPeriodo } from '@/lib/actions/deudas'
+import { TicketConfirmDialog } from '@/components/tickets/ticket-confirm-dialog'
 import { Deuda, FrecuenciaPago, FRECUENCIA_LABELS } from '@/lib/types'
 import { formatMonto, formatFecha } from '@/lib/utils/template-renderer'
 import { cn } from '@/lib/utils'
@@ -27,6 +28,17 @@ type DeudaPendiente = Deuda & {
 
 interface PagosPendientesPanelProps {
     deudasPendientes: DeudaPendiente[]
+    /**
+     * I8: sin este permiso no se abre el modal de boleto tras marcar un
+     * pago desde el panel flotante -- solo puede fallar (emitirTicketDePago
+     * lo rechaza en TypeScript). El pago se marca exactamente igual; lo
+     * único que cambia es que el modal no aparece.
+     */
+    puedeVerTickets?: boolean
+    /** Estado de la estación de impresión del usuario actual (Tarea 5). */
+    estacion?: { sucursalNombre: string; enLinea: boolean } | null
+    /** Permiso `imprimir_ticket`, reenviado tal cual a `TicketConfirmDialog`. */
+    puedeImprimir?: boolean
 }
 
 function getPeriodoActual(deuda: DeudaPendiente): string {
@@ -63,11 +75,16 @@ const URGENCIA_CONFIG = {
     proximo: { color: '#5bbfed', bgColor: 'rgba(0,126,198,0.1)', borderColor: 'rgba(0,126,198,0.2)', label: 'Próximo', icon: Calendar },
 }
 
-export function PagosPendientesPanel({ deudasPendientes }: PagosPendientesPanelProps) {
+export function PagosPendientesPanel({
+    deudasPendientes, puedeVerTickets = false, estacion = null, puedeImprimir = false,
+}: PagosPendientesPanelProps) {
     const [expanded, setExpanded] = useState(false)
     const [isPending, startTransition] = useTransition()
     const [dismissed, setDismissed] = useState<Set<string>>(new Set())
     const [showAll, setShowAll] = useState(false)
+    const [ticketDialog, setTicketDialog] = useState<{
+        pagoId: string; nombre: string; telefono: string | null
+    } | null>(null)
 
     const pendientes = deudasPendientes.filter(d => !dismissed.has(d.id))
     const criticos = pendientes.filter(d => getUrgencia(d) === 'critico')
@@ -85,16 +102,23 @@ export function PagosPendientesPanel({ deudasPendientes }: PagosPendientesPanelP
         const periodo = getPeriodoActual(deuda)
         startTransition(async () => {
             try {
-                await marcarPagoPeriodo(deuda.id, periodo)
+                const { pagoId } = await marcarPagoPeriodo(deuda.id, periodo)
                 toast.success(`Pago registrado para ${deuda.cliente?.nombre ?? 'cliente'}`)
                 setDismissed(prev => new Set([...prev, deuda.id]))
+                if (puedeVerTickets) {
+                    setTicketDialog({
+                        pagoId,
+                        nombre: `${deuda.cliente?.nombre ?? ''} ${deuda.cliente?.apellido ?? ''}`.trim(),
+                        telefono: deuda.cliente?.telefono ?? null,
+                    })
+                }
             } catch (e: unknown) {
                 toast.error(e instanceof Error ? e.message : 'Error al registrar pago')
             }
         })
-    }, [])
+    }, [puedeVerTickets])
 
-    if (total === 0) return null
+    if (total === 0 && !ticketDialog) return null
 
     const accentColor = criticos.length > 0 ? '#ef4444' : urgentes.length > 0 ? '#f59e0b' : '#5bbfed'
 
@@ -208,6 +232,18 @@ export function PagosPendientesPanel({ deudasPendientes }: PagosPendientesPanelP
                 </span>
                 {criticos.length > 0 && <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />}
             </button>
+
+            {puedeVerTickets && (
+                <TicketConfirmDialog
+                    abierto={!!ticketDialog}
+                    onCerrar={() => setTicketDialog(null)}
+                    pagoId={ticketDialog?.pagoId ?? null}
+                    clienteNombre={ticketDialog?.nombre ?? ''}
+                    clienteTelefono={ticketDialog?.telefono ?? null}
+                    estacion={estacion}
+                    puedeImprimir={puedeImprimir}
+                />
+            )}
         </div>
     )
 }

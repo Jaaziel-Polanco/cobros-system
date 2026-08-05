@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+# Copia que deja la interfaz local antes de reescribir el .env, y el
+# temporal del guardado. Los dos pueden contener el token.
+.env.bak
+.env.tmp
+agente.log
+agente.log.1
+agente-sesion.log
+volcado-simulador/

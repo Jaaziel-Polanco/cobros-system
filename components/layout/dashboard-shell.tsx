@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { AppSidebar } from '@/components/layout/app-sidebar'
 import { PagosPendientesPanel } from '@/components/layout/pagos-pendientes-panel'
 import { Profile, Deuda } from '@/lib/types'
+import { getPermisos } from '@/lib/utils/permisos'
 import { Menu, TrendingUp } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
@@ -24,10 +25,20 @@ interface DashboardShellProps {
     profile: Profile
     children: React.ReactNode
     deudasPendientes?: DeudaPendiente[]
+    /** Estado de la estación de impresión del usuario actual (Tarea 5). */
+    estacion?: { sucursalNombre: string; enLinea: boolean } | null
 }
 
-export function DashboardShell({ profile, children, deudasPendientes = [] }: DashboardShellProps) {
+export function DashboardShell({
+    profile, children, deudasPendientes = [], estacion = null,
+}: DashboardShellProps) {
     const [mobileOpen, setMobileOpen] = useState(false)
+    // I8: el panel flotante no debe ofrecer el modal de boleto a quien no
+    // tiene ver_tickets -- solo puede fallar.
+    const puedeVerTickets = getPermisos(profile).ver_tickets
+    // Igual que puedeVerTickets: sin imprimir_ticket, el botón de imprimir
+    // del modal no debe aparecer -- solo puede fallar al pulsarlo.
+    const puedeImprimir = getPermisos(profile).imprimir_ticket
 
     return (
         <div className="flex h-screen overflow-hidden" style={{ background: '#0a1628' }}>
@@ -63,7 +74,12 @@ export function DashboardShell({ profile, children, deudasPendientes = [] }: Das
 
                     {/* Floating notification panel */}
                     {deudasPendientes.length > 0 && (
-                        <PagosPendientesPanel deudasPendientes={deudasPendientes} />
+                        <PagosPendientesPanel
+                            deudasPendientes={deudasPendientes}
+                            puedeVerTickets={puedeVerTickets}
+                            estacion={estacion}
+                            puedeImprimir={puedeImprimir}
+                        />
                     )}
                 </div>
             </main>

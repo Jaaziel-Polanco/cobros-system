@@ -60,9 +60,24 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=tu_anon_key
 SUPABASE_SERVICE_ROLE_KEY=tu_service_role_key
 CRON_SECRET=un_secreto_largo_y_aleatorio
 CRON_SCHEDULE=0 8,18 * * *    # 8 AM y 6 PM hora RD, todos los días
+CRON_RUN_ON_START=false       # Déjalo en false. En true, CADA reinicio manda WhatsApps reales. Ver sección dedicada más abajo.
 PORT=3000
 HOSTNAME=0.0.0.0
+APP_PUBLIC_URL=https://boletos.tu-dominio.com   # Boletería: base pública de los enlaces y QR de boletos (ver nota abajo)
 ```
+
+> **Nota:** `.env.example` no está trackeado en git en este repositorio (`.gitignore` excluye
+> `.env*`). Esta guía es la referencia versionada de las variables disponibles; si copias
+> `.env.example` desde otra máquina o lo reconstruyes, incluye también `APP_PUBLIC_URL` (ver
+> arriba).
+>
+> **`APP_PUBLIC_URL` debe ser una URL alcanzable desde el teléfono del cliente, no una
+> dirección de red local.** Desde el Plan 2, cada boleto impreso lleva un código QR
+> (`lib/escpos/tirilla-ticket.ts`) que codifica exactamente `${APP_PUBLIC_URL}/t/<token>` —
+> el cliente lo escanea con su propio teléfono, fuera de la red de la sucursal, para ver su
+> boleto en `app/t/`. Un valor como `http://localhost:3000` o una IP `192.168.x.x` genera un
+> QR que solo funciona dentro de la LAN de la sucursal: el cliente lo escanea y su teléfono
+> no puede alcanzar esa dirección. Usa un dominio público (o una IP pública) con HTTPS.
 
 #### Generar un CRON_SECRET seguro:
 
@@ -122,6 +137,40 @@ El formato es el estándar de 5 campos: `minuto hora día-mes mes día-semana`
 | `*/30 * * * *`    | Cada 30 minutos (solo para pruebas)                |
 
 👉 Herramienta visual: https://crontab.guru/
+
+---
+
+## Ejecución al iniciar (CRON_RUN_ON_START)
+
+```env
+CRON_RUN_ON_START=false   # Default: false (desactivado) si la variable no está presente
+```
+
+Al arrancar `server.js`, si `CRON_RUN_ON_START` vale **exactamente `"true"`**,
+se dispara una pasada de recordatorios **2 segundos después** de levantar el
+servidor, además de quedar programada según `CRON_SCHEDULE`. Cualquier otro
+valor —incluido no definir la variable— la desactiva.
+
+**Es opt-in a propósito, y lo normal es dejarlo apagado.** Cuando estaba
+activado por defecto, **cada reinicio del proceso** (deploy, `pm2 restart`,
+`docker restart`, una caída con reinicio automático) enviaba WhatsApps reales
+a los clientes con deuda vencida en ese momento, a la hora que fuera.
+
+El efecto no era mandar duplicados prohibidos —el intervalo mínimo por etapa
+se respetaba— sino **adelantar a la hora del arranque los envíos que tocaban
+en la próxima corrida programada**. Medido en producción:
+
+| Síntoma (30 días) | |
+| --- | --- |
+| Envíos fuera del horario 8h/18h | 258, en 10 ráfagas |
+| Ráfaga mayor (30/07, 21:28) | 155 mensajes de cobro a las 9 PM |
+| Corrida programada 31/07 08:00 | 6 envíos, contra 336 el día anterior |
+
+Si el servidor estuvo caído durante un horario programado, la siguiente
+corrida (pocas horas después) recoge todo igual; y si necesitas la pasada ya
+mismo, dispárala a mano desde `/simulador` → "Disparar Cron ahora". Ninguno de
+los dos casos justifica que un deploy pueda escribirle a un cliente a
+cualquier hora.
 
 ---
 
@@ -219,6 +268,69 @@ ip addr show | grep inet
 # Windows
 ipconfig
 ```
+
+---
+
+## Impresión en sucursales
+
+### Arquitectura
+
+```
+[Servidor Local]                          [PC de sucursal]
+  ├── /api/print/hello   ◄──────────────  print-agent (Node.js)
+  ├── /api/print/poll    ◄──────────────  ├── consulta trabajos pendientes
+  ├── /api/print/ack     ◄──────────────  └── imprime y confirma
+  └── purgarPayloadsImpresion (cron)
+```
+
+La web **encola** trabajos de impresión (tirilla en ESC/POS, base64) en la
+tabla `print_jobs`. El agente instalado en cada PC de sucursal los consulta
+por long-poll (`/api/print/poll`), los manda a la impresora física y
+confirma el resultado (`/api/print/ack`). El servidor nunca imprime nada
+directamente: solo encola y reparte.
+
+### Antes de instalar el agente
+
+Crea las sucursales y estaciones desde `/estaciones` en el sistema. Cada
+estación genera un **token** que se muestra una sola vez: es lo que
+identifica y autentica a esa PC frente al servidor (viaja en la cabecera
+`Authorization: Bearer <token>`, nunca en el cuerpo de la petición).
+
+### Instalación del agente
+
+Documentada en detalle en `print-agent/README.md`: requisitos, tipos de
+conexión de impresora (`red` / `windows`), cómo dejarlo corriendo como
+servicio de Windows con NSSM, y el simulador para probar sin impresora
+física.
+
+`print-agent/` está **excluido de la imagen Docker a propósito**: se
+instala en las PC de sucursal, no en el servidor.
+
+### Purga de payloads impresos
+
+Los trabajos de impresión guardan la tirilla completa en base64. Una vez
+impresa, ese contenido ya no sirve para nada — el boleto salió del papel —
+pero sin purgarlo la tabla crece sin límite. Una tarea programada dentro
+del mismo cron embebido de `server.js` vacía periódicamente el
+`payload_escpos` de los trabajos terminados, conservando la fila (y su
+`preview_texto`) para auditoría.
+
+Variables nuevas (`.env.local`):
+
+```env
+PURGA_SCHEDULE=30 3 * * *   # Horario cron (zona RD) de la purga. Default: 3:30 AM.
+PURGA_DIAS=7                # Días de retención antes de vaciar el payload. Default: 7.
+```
+
+Al arrancar el servidor verás en consola:
+
+```
+[PURGA] 🧹 Programada: "30 3 * * *" (retención: 7 días)
+```
+
+La purga solo toca trabajos ya resueltos (`impreso` o `error`) y respeta
+la ventana de retención: los trabajos en vuelo (`pendiente`, `reclamado`)
+nunca se ven afectados.
 
 ---
 

@@ -8,3 +8,4 @@ deploy.ini
 .vscode
 .cursor
 supabase/migrations
+print-agent

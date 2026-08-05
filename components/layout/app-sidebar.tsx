@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
 import { Profile } from '@/lib/types'
 import { toast } from 'sonner'
+import { getPermisos } from '@/lib/utils/permisos'
 import {
     LayoutDashboard,
     Users,
@@ -22,6 +23,10 @@ import {
     X,
     FlaskConical,
     Store,
+    Ticket,
+    Settings,
+    Printer,
+    Gift,
 } from 'lucide-react'
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
@@ -33,6 +38,8 @@ const ALL_NAV = [
     { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, permiso: null },
     { href: '/clientes', label: 'Clientes', icon: Users, permiso: null },
     { href: '/cuentas', label: 'Cuentas', icon: CreditCard, permiso: null },
+    { href: '/tickets', label: 'Boletos', icon: Ticket, permiso: 'ver_tickets' },
+    { href: '/sorteos', label: 'Sorteos', icon: Gift, permiso: 'ver_sorteos' },
     { href: '/referencias', label: 'Referencias', icon: BookUser, permiso: 'ver_referencias' },
     { href: '/plantillas', label: 'Plantillas', icon: FileText, permiso: 'ver_plantillas' },
     { href: '/webhooks', label: 'Webhooks', icon: Webhook, permiso: 'ver_webhooks' },
@@ -40,6 +47,8 @@ const ALL_NAV = [
     { href: '/usuarios', label: 'Usuarios', icon: UserCog, permiso: 'admin_only' },
     { href: '/logs', label: 'Registros', icon: ClipboardList, permiso: 'ver_logs' },
     { href: '/simulador', label: 'Simulador', icon: FlaskConical, permiso: 'ver_simulador' },
+    { href: '/configuracion/tickets', label: 'Config. Boletos', icon: Settings, permiso: 'admin_only' },
+    { href: '/estaciones', label: 'Estaciones', icon: Printer, permiso: 'admin_only' },
 ]
 
 interface AppSidebarProps {
@@ -55,13 +64,12 @@ export function AppSidebar({ profile, mobileOpen = false, onMobileClose }: AppSi
     const [loggingOut, setLoggingOut] = useState(false)
 
     const isAdmin = profile.rol === 'admin'
-    const permisos = profile.permisos ?? {}
+    const permisos = getPermisos(profile)
 
     const navItems = ALL_NAV.filter(item => {
-        if (item.permiso === null) return true          // Always visible
+        if (item.permiso === null) return true          // Siempre visible
         if (item.permiso === 'admin_only') return isAdmin
-        if (isAdmin) return true
-        return !!(permisos as Record<string, boolean>)[item.permiso]
+        return permisos[item.permiso as keyof typeof permisos] === true
     })
 
     const handleLogout = async () => {
