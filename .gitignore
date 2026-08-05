@@ -10,6 +10,7 @@
 !.yarn/releases
 !.yarn/versions
 
+/ssh.txt
 # testing
 /coverage
 

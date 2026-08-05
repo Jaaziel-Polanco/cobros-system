@@ -35,7 +35,24 @@ const HOSTNAME = process.env.HOSTNAME ?? "0.0.0.0";
 
 const CRON_SCHEDULE = process.env.CRON_SCHEDULE ?? "0 8,18 * * *";
 const CRON_SECRET = process.env.CRON_SECRET;
-const CRON_RUN_ON_START = (process.env.CRON_RUN_ON_START ?? "true") === "true";
+
+// OPT-IN, no opt-out. El default era "true", así que CADA arranque del proceso
+// —deploy, `docker restart`, un crash con reinicio automático— mandaba una
+// tanda real de WhatsApps a la hora que fuera.
+//
+// No producía duplicados prohibidos (el intervalo por etapa se respetaba: 0
+// violaciones en 20 días de envios_log), sino algo más difícil de ver:
+// ADELANTABA a la hora del deploy los envíos que tocaban en la próxima corrida
+// programada. Medido en producción el 2026-07-30: un reinicio a las 21:28
+// disparó 155 mensajes de cobro a las 9 de la noche, y la corrida de las 8:00
+// del día siguiente bajó de 336 envíos a 6 — se los había comido el deploy.
+// En 30 días fueron 258 envíos fuera de horario en 10 ráfagas.
+//
+// El caso que esto cubría (servidor caído durante un horario programado) lo
+// resuelve la siguiente corrida a las pocas horas, o el disparo manual desde
+// /simulador. No justifica que un deploy pueda escribirle a un cliente a
+// cualquier hora.
+const CRON_RUN_ON_START = process.env.CRON_RUN_ON_START === "true";
 
 const app = next({ dev: isDev, hostname: HOSTNAME, port: PORT });
 const handle = app.getRequestHandler();

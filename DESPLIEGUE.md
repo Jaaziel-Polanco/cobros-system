@@ -60,7 +60,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=tu_anon_key
 SUPABASE_SERVICE_ROLE_KEY=tu_service_role_key
 CRON_SECRET=un_secreto_largo_y_aleatorio
 CRON_SCHEDULE=0 8,18 * * *    # 8 AM y 6 PM hora RD, todos los días
-CRON_RUN_ON_START=true        # Dispara recordatorios reales 2s después de CADA reinicio. Ver sección dedicada más abajo.
+CRON_RUN_ON_START=false       # Déjalo en false. En true, CADA reinicio manda WhatsApps reales. Ver sección dedicada más abajo.
 PORT=3000
 HOSTNAME=0.0.0.0
 APP_PUBLIC_URL=https://boletos.tu-dominio.com   # Boletería: base pública de los enlaces y QR de boletos (ver nota abajo)
@@ -143,22 +143,34 @@ El formato es el estándar de 5 campos: `minuto hora día-mes mes día-semana`
 ## Ejecución al iniciar (CRON_RUN_ON_START)
 
 ```env
-CRON_RUN_ON_START=true   # Default: true si la variable no está presente
+CRON_RUN_ON_START=false   # Default: false (desactivado) si la variable no está presente
 ```
 
-Al arrancar `server.js`, si `CRON_RUN_ON_START` no está presente o vale
-exactamente `"true"`, se dispara una pasada de recordatorios **2 segundos
-después** de levantar el servidor, además de quedar programada según
-`CRON_SCHEDULE` (cualquier otro valor, incluido `"false"`, la desactiva). Es
-útil para
-cubrir deudas vencidas mientras el servidor estuvo caído, pero significa que
-**cada reinicio del proceso** (deploy, `pm2 restart`, caída y reinicio
-automático, `docker restart`) envía recordatorios reales de WhatsApp a los
-clientes con deuda vencida en ese momento — no es una ejecución de prueba.
+Al arrancar `server.js`, si `CRON_RUN_ON_START` vale **exactamente `"true"`**,
+se dispara una pasada de recordatorios **2 segundos después** de levantar el
+servidor, además de quedar programada según `CRON_SCHEDULE`. Cualquier otro
+valor —incluido no definir la variable— la desactiva.
 
-Ponlo en `CRON_RUN_ON_START=false` en cualquier entorno donde los reinicios
-sean frecuentes o no controlados (por ejemplo, mientras se depura un
-despliegue) para evitar disparos de WhatsApp no planeados.
+**Es opt-in a propósito, y lo normal es dejarlo apagado.** Cuando estaba
+activado por defecto, **cada reinicio del proceso** (deploy, `pm2 restart`,
+`docker restart`, una caída con reinicio automático) enviaba WhatsApps reales
+a los clientes con deuda vencida en ese momento, a la hora que fuera.
+
+El efecto no era mandar duplicados prohibidos —el intervalo mínimo por etapa
+se respetaba— sino **adelantar a la hora del arranque los envíos que tocaban
+en la próxima corrida programada**. Medido en producción:
+
+| Síntoma (30 días) | |
+| --- | --- |
+| Envíos fuera del horario 8h/18h | 258, en 10 ráfagas |
+| Ráfaga mayor (30/07, 21:28) | 155 mensajes de cobro a las 9 PM |
+| Corrida programada 31/07 08:00 | 6 envíos, contra 336 el día anterior |
+
+Si el servidor estuvo caído durante un horario programado, la siguiente
+corrida (pocas horas después) recoge todo igual; y si necesitas la pasada ya
+mismo, dispárala a mano desde `/simulador` → "Disparar Cron ahora". Ninguno de
+los dos casos justifica que un deploy pueda escribirle a un cliente a
+cualquier hora.
 
 ---
 
