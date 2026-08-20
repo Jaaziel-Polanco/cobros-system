@@ -39,6 +39,7 @@ export default async function SorteoDetallePage({
                 ganadores={detalle.ganadores}
                 ejecuciones={detalle.ejecuciones}
                 puedeGestionar={permisos.realizar_sorteo}
+                puedeImprimir={permisos.imprimir_ticket}
             />
         </div>
     )

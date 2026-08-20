@@ -17,7 +17,22 @@ export interface PermisosAgente {
     registrar_pagos: boolean
     crear_cuentas: boolean
     ver_tickets: boolean
+    /** Emitir boletos manuales (con motivo). Crear, no destruir. */
     generar_ticket_manual: boolean
+    /**
+     * Anular un boleto ya emitido.
+     *
+     * Estaba metido dentro de `generar_ticket_manual`, que gateaba las dos
+     * cosas a la vez: quien podía emitir un boleto de cortesía podía además
+     * invalidar cualquier boleto de sus clientes. Son operaciones distintas
+     * —una crea, la otra deshace algo que el cliente ya tiene en la mano— y
+     * ahora se conceden por separado.
+     *
+     * Para no cambiarle los permisos a nadie por la espalda, los perfiles
+     * anteriores al cambio heredan aquí el valor que tuvieran en
+     * `generar_ticket_manual`. Ver `getPermisos()`.
+     */
+    anular_ticket: boolean
     imprimir_ticket: boolean
     ver_sorteos: boolean
     realizar_sorteo: boolean
@@ -76,6 +91,7 @@ export const DEFAULT_PERMISOS_AGENTE: PermisosAgente = {
     crear_cuentas: true,
     ver_tickets: true,
     generar_ticket_manual: true,
+    anular_ticket: true,
     imprimir_ticket: true,
     ver_sorteos: false,
     realizar_sorteo: false,

@@ -59,7 +59,11 @@ const PERMISOS_CONFIG: PermisoConfig[] = [
 // para que quede claro que son permisos de otro flujo de negocio.
 const PERMISOS_CONFIG_BOLETERIA: PermisoConfig[] = [
     { key: 'ver_tickets', label: 'Ver Boletos', desc: 'Ver el listado de boletos emitidos', icon: Ticket, colorOn: '#38bdf8' },
-    { key: 'generar_ticket_manual', label: 'Generar/Anular Boletos', desc: 'Emitir boletos manuales y anular boletos existentes', icon: Ticket, colorOn: '#fb923c' },
+    { key: 'generar_ticket_manual', label: 'Generar Boletos', desc: 'Emitir boletos manuales, con motivo, fuera del flujo de cobro', icon: Ticket, colorOn: '#fb923c' },
+    // Separado de "Generar" a propósito: emitir un boleto de cortesía y
+    // anular uno que el cliente ya tiene en la mano no son la misma
+    // confianza. Iban bajo un solo permiso.
+    { key: 'anular_ticket', label: 'Anular Boletos', desc: 'Invalidar un boleto ya emitido, con motivo', icon: Ban, colorOn: '#f87171' },
     { key: 'imprimir_ticket', label: 'Imprimir Boletos', desc: 'Enviar boletos a la impresora térmica', icon: Printer, colorOn: '#c084fc' },
     { key: 'ver_sorteos', label: 'Ver Sorteos', desc: 'Ver los sorteos configurados', icon: Gift, colorOn: '#facc15' },
     { key: 'realizar_sorteo', label: 'Realizar Sorteo', desc: 'Ejecutar el sorteo y asignar boletos ganadores', icon: Dices, colorOn: '#f472b6' },

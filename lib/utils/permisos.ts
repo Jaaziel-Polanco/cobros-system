@@ -24,7 +24,37 @@ export function getPermisos(profile: PerfilMinimo): PermisosAgente {
         }
         return todos
     }
-    return { ...DEFAULT_PERMISOS_AGENTE, ...(profile.permisos ?? {}) }
+
+    const guardados = profile.permisos ?? {}
+    const efectivos = { ...DEFAULT_PERMISOS_AGENTE, ...guardados }
+
+    /**
+     * `anular_ticket` se separó de `generar_ticket_manual`, que antes
+     * gateaba las dos acciones. Un perfil guardado antes del cambio no
+     * tiene la clave nueva.
+     *
+     * La fusión de arriba le daría el valor por defecto (`true`), y eso
+     * sería un regalo silencioso: un agente al que le habían QUITADO
+     * `generar_ticket_manual` —o sea, alguien a quien deliberadamente se le
+     * negó anular boletos— amanecería pudiendo anularlos. Un permiso que
+     * aparece solo porque se desplegó una versión no lo concedió nadie.
+     *
+     * Así que, mientras la clave nueva no exista, se hereda del permiso
+     * viejo. Solo cuando estaba explícitamente guardado: si el perfil no
+     * dice nada de ninguno de los dos, el valor por defecto es correcto.
+     *
+     * Esto convive con la migración que rellena la columna
+     * (20260807_01_separar_permiso_anular_ticket.sql): una vez rellenada,
+     * la clave existe y esta rama deja de tocar nada. Está aquí para que
+     * el orden entre despliegue y migración deje de importar — sea cual
+     * sea, nadie gana ni pierde permisos.
+     */
+    if (guardados.anular_ticket === undefined
+        && guardados.generar_ticket_manual !== undefined) {
+        efectivos.anular_ticket = guardados.generar_ticket_manual
+    }
+
+    return efectivos
 }
 
 export function tienePermiso(

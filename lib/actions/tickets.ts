@@ -128,10 +128,10 @@ export async function emitirTicketDePago(
     // Flujo automático: se dispara desde el modal que sale justo después de
     // registrar un pago. Se gatea con ver_tickets, no con
     // generar_ticket_manual: ese permiso significa "no puede crear boletos
-    // de la nada" y es para emitirTicketManual/anularTicket, que crean o
-    // destruyen boletos FUERA del flujo de cobro. Gatear el flujo normal
-    // con generar_ticket_manual le rompería el cobro a cualquier agente al
-    // que se le quite ese permiso. Si un agente no puede ni ver boletos, no
+    // de la nada" y es para emitirTicketManual, que emite FUERA del flujo
+    // de cobro (anularTicket tiene el suyo propio, anular_ticket). Gatear
+    // el flujo normal con generar_ticket_manual le rompería el cobro a
+    // cualquier agente al que se le quite. Si un agente no puede ni ver boletos, no
     // tiene sentido emitirle uno; y el derecho a registrar el pago que
     // origina este boleto ya lo controla registrar_pagos aguas arriba.
     if (!permisos.ver_tickets) {
@@ -203,7 +203,7 @@ export async function emitirTicketManual(
 export async function anularTicket(ticketId: string, motivo: string): Promise<void> {
     const { supabase, user, permisos } = await perfilActual()
 
-    if (!permisos.generar_ticket_manual) {
+    if (!permisos.anular_ticket) {
         throw new Error('No tienes permiso para anular boletos')
     }
 
@@ -552,9 +552,9 @@ export async function enviarTicketWhatsApp(
     if (resultado.ok) {
         // I7: RPC atómico en vez de leer-y-escribir con el cliente de sesión.
         // La única policy de UPDATE sobre tickets para agentes exige
-        // generar_ticket_manual, mientras que este flujo se gatea con
+        // anular_ticket, mientras que este flujo se gatea con
         // ver_tickets: para un agente con ver_tickets y sin
-        // generar_ticket_manual, el UPDATE anterior afectaba 0 filas sin que
+        // anular_ticket, el UPDATE anterior afectaba 0 filas sin que
         // nadie se enterara (no había .select()). El RPC es SECURITY DEFINER
         // y hace el incremento en una sola sentencia atómica.
         const { error: incrementoError } = await supabase.rpc('incrementar_envio_ticket', {

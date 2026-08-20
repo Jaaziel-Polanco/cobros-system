@@ -44,3 +44,62 @@ describe('tienePermiso', () => {
         expect(tienePermiso({ rol: 'agente', permisos: null }, 'realizar_sorteo')).toBe(false)
     })
 })
+
+describe('separación de anular_ticket', () => {
+    /**
+     * `anular_ticket` se separó de `generar_ticket_manual`. Estas pruebas
+     * cubren el hueco entre el despliegue del código y la migración que
+     * rellena la columna: durante ese rato hay perfiles sin la clave nueva.
+     */
+
+    it('NO concede anular a quien tenía generar en false', () => {
+        // La prueba que motiva la herencia. Con la fusión a secas
+        // ({...DEFAULT, ...guardados}), este agente recibiría el valor por
+        // defecto `true` y amanecería pudiendo anular boletos que ayer no
+        // podía. Un permiso que aparece solo porque se desplegó una versión
+        // no lo concedió nadie.
+        const permisos = getPermisos({
+            rol: 'agente',
+            permisos: { generar_ticket_manual: false } as never,
+        })
+        expect(permisos.anular_ticket).toBe(false)
+        expect(permisos.generar_ticket_manual).toBe(false)
+    })
+
+    it('mantiene anular a quien tenía generar en true', () => {
+        const permisos = getPermisos({
+            rol: 'agente',
+            permisos: { generar_ticket_manual: true } as never,
+        })
+        expect(permisos.anular_ticket).toBe(true)
+    })
+
+    it('una vez rellenada la clave, manda ella y no la vieja', () => {
+        // Es el estado después de la migración: un administrador ya puede
+        // dar «generar» sin dar «anular», que es el objetivo del cambio.
+        const permisos = getPermisos({
+            rol: 'agente',
+            permisos: { generar_ticket_manual: true, anular_ticket: false } as never,
+        })
+        expect(permisos.generar_ticket_manual).toBe(true)
+        expect(permisos.anular_ticket).toBe(false)
+    })
+
+    it('y también al revés: anular sin generar', () => {
+        const permisos = getPermisos({
+            rol: 'agente',
+            permisos: { generar_ticket_manual: false, anular_ticket: true } as never,
+        })
+        expect(permisos.anular_ticket).toBe(true)
+        expect(permisos.generar_ticket_manual).toBe(false)
+    })
+
+    it('sin ninguna de las dos claves, usa el valor por defecto', () => {
+        const permisos = getPermisos({ rol: 'agente', permisos: {} as never })
+        expect(permisos.anular_ticket).toBe(true)
+    })
+
+    it('el admin puede anular siempre', () => {
+        expect(tienePermiso({ rol: 'admin', permisos: null }, 'anular_ticket')).toBe(true)
+    })
+})
