@@ -17,6 +17,7 @@ import type { EjecucionConEjecutor, GanadorDetalle } from '@/lib/actions/sorteos
 import { SorteoFormDialog } from './sorteo-form-dialog'
 import { EjecutarSorteoDialog } from './ejecutar-sorteo-dialog'
 import { GanadoresPanel } from './ganadores-panel'
+import { BoletosLotePanel } from './boletos-lote-panel'
 import { formatearFechaCalendario } from '@/lib/utils/fecha-rd'
 import { ESTADO_SORTEO_LABELS } from '@/lib/types'
 import type { Sorteo, EstadoSorteo } from '@/lib/types'
@@ -34,10 +35,15 @@ interface SorteoDetalleViewProps {
     ganadores: GanadorDetalle[]
     ejecuciones: EjecucionConEjecutor[]
     puedeGestionar: boolean
+    /** `permisos.imprimir_ticket`. Es otro permiso que `puedeGestionar`:
+     *  imprimir boletos no es lo mismo que ejecutar el sorteo, y las Server
+     *  Actions de `impresion-lote.ts` exigen exactamente este. */
+    puedeImprimir: boolean
 }
 
 export function SorteoDetalleView({
     sorteo, totalBoletos, ejecucionVigente, ganadores, ejecuciones, puedeGestionar,
+    puedeImprimir,
 }: SorteoDetalleViewProps) {
     const [editar, setEditar] = useState(false)
     const [ejecutar, setEjecutar] = useState(false)
@@ -185,6 +191,17 @@ export function SorteoDetalleView({
                     </div>
                 </dl>
             </div>
+
+            {/* La impresión por lotes va aquí arriba, antes de los ganadores:
+                se usa durante el sorteo (sacar los boletos para la tómbola,
+                reimprimir una tanda), no después de tenerlo resuelto. */}
+            {totalBoletos > 0 && (
+                <BoletosLotePanel
+                    sorteoId={sorteo.id}
+                    totalBoletos={totalBoletos}
+                    puedeImprimir={puedeImprimir}
+                />
+            )}
 
             {/* Un borrador CON ganadores vigentes no es un sorteo sin ejecutar.
                 guardar_ejecucion_sorteo deja el sorteo en borrador cuando ya hay

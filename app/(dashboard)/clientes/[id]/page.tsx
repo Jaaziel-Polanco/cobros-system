@@ -218,6 +218,7 @@ export default async function ClienteDetailPage({ params }: { params: Promise<{ 
                             tickets={tickets}
                             pagosSinTicket={pagosSinTicket}
                             puedeGenerar={permisos.generar_ticket_manual}
+                            puedeAnular={permisos.anular_ticket}
                             puedeEmitirDePago={permisos.ver_tickets}
                             puedeImprimir={permisos.imprimir_ticket}
                             estacion={estacion}

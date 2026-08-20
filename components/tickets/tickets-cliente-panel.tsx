@@ -30,9 +30,14 @@ interface Props {
     tieneTelefono: boolean
     tickets: TicketConSorteoResumen[]
     pagosSinTicket: PagoSinBoleto[]
-    /** Gatea "Boleto manual" y "Anular" (permiso `generar_ticket_manual`: crear o
-     *  destruir boletos fuera del flujo normal de cobro). */
+    /** Gatea solo "Boleto manual" (permiso `generar_ticket_manual`: emitir
+     *  boletos fuera del flujo normal de cobro). */
     puedeGenerar: boolean
+    /** Gatea solo "Anular" (permiso `anular_ticket`). Antes iba junto con
+     *  `puedeGenerar` bajo un único permiso, y eso ataba dos cosas que no se
+     *  parecen: emitir un boleto de cortesía y invalidar uno que el cliente
+     *  ya tiene en la mano. Ahora se conceden por separado. */
+    puedeAnular: boolean
     /** Gatea el aviso de "pagos sin boleto" y su botón "Emitir boleto" (permiso
      *  `ver_tickets`, NO `generar_ticket_manual`). Recuperar el boleto de un pago
      *  ya cobrado es parte del flujo normal de cobro, no "crear boletos de la
@@ -59,7 +64,7 @@ interface Props {
 }
 
 export function TicketsClientePanel({
-    clienteId, clienteNombre, tieneTelefono, tickets, pagosSinTicket, puedeGenerar,
+    clienteId, clienteNombre, tieneTelefono, tickets, pagosSinTicket, puedeGenerar, puedeAnular,
     puedeEmitirDePago, puedeImprimir = false, estacion = null, estadoImpresion = {},
 }: Props) {
     const [manualAbierto, setManualAbierto] = useState(false)
@@ -228,7 +233,7 @@ export function TicketsClientePanel({
                                                 <Printer className="h-3.5 w-3.5" />
                                             </button>
                                         )}
-                                        {puedeGenerar && (
+                                        {puedeAnular && (
                                             <button
                                                 title="Anular boleto"
                                                 disabled={pendiente}

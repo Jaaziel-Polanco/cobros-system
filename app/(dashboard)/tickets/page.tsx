@@ -62,7 +62,7 @@ export default async function TicketsPage({
             <TicketsView
                 tickets={tickets}
                 sorteos={sorteos ?? []}
-                puedeAnular={permisos.generar_ticket_manual}
+                puedeAnular={permisos.anular_ticket}
                 // `ver_sorteos` además de `realizar_sorteo`, y no por celo: el
                 // desplegable de destino se llena con el `select` de `sorteos`
                 // de arriba, que va por el cliente de sesión y depende de la
