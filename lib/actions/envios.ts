@@ -113,6 +113,23 @@ export async function enviarRecordatorioManual(deudaId: string): Promise<Resulta
     if (deuda.estado === 'saldado') return motivoDeFallo(deudaId, 'La deuda ya está saldada')
     if (deuda.pausado) return motivoDeFallo(deudaId, 'La deuda está pausada')
 
+    // RLS vuelve a filtrar en silencio, y aqui duele mas que en `webhooks`.
+    // La policy de `deudas` deja ver las del propio agente; la de `clientes`,
+    // los clientes del propio agente. Son dos condiciones DISTINTAS, y en
+    // cuanto una deuda y su cliente estan asignados a agentes diferentes, el
+    // agente ve la deuda pero el embed `cliente:clientes(*)` le llega null.
+    //
+    // No es hipotetico: en produccion hay una deuda asi. El codigo hacia
+    // `deuda.cliente.nombre` y reventaba con "Cannot read properties of null",
+    // que en produccion se ve como el mismo digest opaco de siempre.
+    //
+    // Un embed que puede ser null por RLS no se desreferencia sin mirar.
+    if (!deuda.cliente) {
+        return motivoDeFallo(deudaId,
+            'El cliente de esta cuenta esta asignado a otro agente, asi que no puedes verlo. ' +
+            'Pide a un administrador que reasigne el cliente o la cuenta.')
+    }
+
     const { data: plantilla } = await supabase
         .from('plantillas_mensaje')
         .select('*')

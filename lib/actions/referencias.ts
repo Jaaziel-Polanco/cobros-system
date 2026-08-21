@@ -78,6 +78,14 @@ export async function enviarNotificacionReferencia(referenciaId: string, deudaId
 
     if (refError || !ref) throw new Error('Referencia no encontrada')
 
+    // Mismo motivo que en enviarRecordatorioManual(): si el cliente de la
+    // referencia esta asignado a otro agente, RLS filtra el embed y llega
+    // null. Desreferenciarlo revienta con un TypeError que en produccion se
+    // ve como un digest opaco.
+    if (!ref.cliente) {
+        throw new Error('El cliente de esta referencia esta asignado a otro agente y no puedes verlo')
+    }
+
     const { data: deuda, error: deudaError } = await supabase
         .from('deudas')
         .select('*, agente:profiles(id, full_name)')

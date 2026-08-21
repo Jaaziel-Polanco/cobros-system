@@ -228,3 +228,52 @@ describe('enviarNotificacionReferencia', () => {
         expect(espiaFetch).not.toHaveBeenCalled()
     })
 })
+
+/**
+ * El mismo defecto que los webhooks, en otro sitio y mas caro.
+ *
+ * La policy de `deudas` deja ver las del propio agente. La de `clientes`, los
+ * clientes del propio agente. Son dos condiciones DISTINTAS: en cuanto una
+ * deuda y su cliente estan asignados a agentes diferentes, el agente ve la
+ * deuda pero el embed `cliente:clientes(*)` le llega null.
+ *
+ * En produccion existe una deuda asi. El codigo hacia `deuda.cliente.nombre`
+ * y lanzaba "Cannot read properties of null (reading 'nombre')", que Next.js
+ * presenta al operador como el mismo digest opaco de siempre.
+ */
+describe('embed de cliente filtrado por RLS', () => {
+    it('no revienta cuando el cliente pertenece a otro agente', async () => {
+        // Exactamente el caso real: la deuda se ve, el cliente no.
+        dbSesion.deudas[0].cliente = null
+        const { enviarRecordatorioManual } = await import('./envios')
+
+        // Sin `rejects`: con el codigo anterior esto lanzaba un TypeError y
+        // la linea propagaba.
+        const r = await enviarRecordatorioManual(DEUDA)
+
+        expect(r.ok).toBe(false)
+        expect((r as { motivo: string }).motivo).toContain('otro agente')
+        expect(espiaFetch).not.toHaveBeenCalled()
+    })
+
+    it('tampoco manda nada a medias en ese caso', async () => {
+        dbSesion.deudas[0].cliente = null
+        const { enviarRecordatorioManual } = await import('./envios')
+        await enviarRecordatorioManual(DEUDA)
+
+        // Ni webhook ni rastro: no hubo envio que registrar.
+        expect(espiaFetch).not.toHaveBeenCalled()
+        expect(dbSesion.envios_log).toHaveLength(0)
+    })
+
+    it('la notificacion a referencia explica la causa en vez de reventar', async () => {
+        dbSesion.referencias_cliente[0].cliente = null
+        const { enviarNotificacionReferencia } = await import('./referencias')
+
+        // Sigue lanzando -- su contrato no cambia aqui -- pero con un mensaje
+        // propio, no con un TypeError de desreferencia.
+        await expect(enviarNotificacionReferencia(REFERENCIA, DEUDA))
+            .rejects.toThrow(/asignado a otro agente/)
+        expect(espiaFetch).not.toHaveBeenCalled()
+    })
+})
