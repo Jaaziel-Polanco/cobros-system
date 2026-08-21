@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { getClientesSimple } from '@/lib/actions/clientes'
 import { CuentasView } from '@/components/cuentas/cuentas-view'
 import { Deuda, Profile } from '@/lib/types'
 import { CreditCard } from 'lucide-react'
@@ -8,14 +9,16 @@ import { getEstadoEstacionDeUsuario } from '@/lib/actions/impresion'
 
 export default async function CuentasPage() {
     const supabase = await createClient()
-    const [{ data: deudas }, { data: clientes }, { data: agentes }] = await Promise.all([
+    const [{ data: deudas }, clientes, { data: agentes }] = await Promise.all([
         supabase.from('deudas').select(`
       *,
       cliente:clientes(id, nombre, apellido, telefono),
       agente:profiles(id, full_name, rol, activo, created_at, updated_at),
       configuracion:configuracion_recordatorio(*)
     `).order('created_at', { ascending: false }),
-        supabase.from('clientes').select('id, nombre, apellido, telefono, dni_ruc, agente_id').eq('activo', true).order('nombre'),
+        // Sin paginar, este selector ofrecia 1000 de los 1455 clientes
+        // activos: 455 no se podian elegir al crear una cuenta.
+        getClientesSimple(),
         supabase.from('profiles').select('id, full_name, rol, activo, created_at, updated_at'),
     ])
 
@@ -37,7 +40,7 @@ export default async function CuentasPage() {
             <CuentasView
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 deudas={(deudas ?? []) as any as Deuda[]}
-                clientes={clientes ?? []}
+                clientes={clientes}
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 agentes={(agentes ?? []) as any as Profile[]}
                 puedeVerTickets={puedeVerTickets}

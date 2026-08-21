@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { getClientesSimple } from '@/lib/actions/clientes'
 import { ReferenciasView } from '@/components/referencias/referencias-view'
 import { ReferenciaCliente } from '@/lib/types'
 import { BookUser } from 'lucide-react'
@@ -6,12 +7,13 @@ import { PageHeader } from '@/components/layout/page-header'
 
 export default async function ReferenciasPage() {
     const supabase = await createClient()
-    const [{ data: referencias }, { data: clientes }] = await Promise.all([
+    const [{ data: referencias }, clientes] = await Promise.all([
         supabase.from('referencias_cliente').select(`
       *,
       cliente:clientes(id, nombre, apellido)
     `).order('created_at', { ascending: false }),
-        supabase.from('clientes').select('id, nombre, apellido').eq('activo', true).order('nombre'),
+        // Mismo recorte silencioso que en /cuentas.
+        getClientesSimple(),
     ])
 
     return (
@@ -20,7 +22,7 @@ export default async function ReferenciasPage() {
             <ReferenciasView
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 referencias={(referencias ?? []) as any as (ReferenciaCliente & { cliente?: { id: string; nombre: string; apellido: string } | null })[]}
-                clientes={clientes ?? []}
+                clientes={clientes}
             />
         </div>
     )

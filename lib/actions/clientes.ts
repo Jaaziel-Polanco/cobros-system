@@ -21,16 +21,24 @@ import {
  * completa, que es donde tiene sentido: ordenar cada lote por separado no
  * ordena el conjunto.
  */
-export async function getClientes() {
+/**
+ * `incluirInactivos` existe porque la tabla de /clientes tiene pestañas
+ * Activos / Inactivos / Todos, y filtra en el cliente. Si se filtrara aquí,
+ * la pestaña de inactivos saldría siempre vacía. El resto de llamantes solo
+ * quieren los activos, que es el valor por defecto.
+ */
+export async function getClientes(opciones?: { incluirInactivos?: boolean }) {
     const supabase = await createClient()
+    const todos = opciones?.incluirInactivos === true
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     type FilaCliente = { id: string; created_at: string } & Record<string, any>
 
-    const filtrar = (consulta: ConsultaEncadenable) => consulta.eq('activo', true)
+    const filtrar = (consulta: ConsultaEncadenable) =>
+        todos ? consulta : consulta.eq('activo', true)
 
     const clientes = await leerTodasLasFilas<FilaCliente>({
-        etiqueta: 'los clientes activos',
+        etiqueta: todos ? 'los clientes' : 'los clientes activos',
         clave: 'id',
         lote: (cursor, limite) => {
             const base = filtrar(encadenable(
@@ -168,13 +176,51 @@ export async function deleteCliente(id: string) {
     revalidatePath('/clientes')
 }
 
+/**
+ * La lista que alimenta los selectores de cliente (crear cuenta, referencias).
+ *
+ * Iba sin paginar y con `order('nombre')`, así que PostgREST devolvía 1000 de
+ * los 1455 clientes activos: 455 no se podían elegir al crear una cuenta. El
+ * recorte no daba error, y como el orden era alfabético tampoco había forma de
+ * notarlo desde la pantalla -- la lista se veía llena.
+ *
+ * `agente_id` va en el select porque /cuentas lo necesita para no ofrecer
+ * clientes de otro agente.
+ */
 export async function getClientesSimple() {
     const supabase = await createClient()
-    const { data, error } = await supabase
-        .from('clientes')
-        .select('id, nombre, apellido, telefono, dni_ruc')
-        .eq('activo', true)
-        .order('nombre')
-    if (error) throw new Error(error.message)
-    return data
+
+    // Forma explicita, no un Record<string, any>: los selectores esperan
+    // `apellido` y `telefono` presentes, y una firma de indice no garantiza
+    // que existan.
+    type FilaSimple = {
+        id: string
+        nombre: string
+        apellido: string
+        telefono: string
+        dni_ruc: string | null
+        agente_id: string | null
+    }
+
+    const filtrar = (consulta: ConsultaEncadenable) => consulta.eq('activo', true)
+
+    const clientes = await leerTodasLasFilas<FilaSimple>({
+        etiqueta: 'los clientes activos del selector',
+        clave: 'id',
+        lote: (cursor, limite) => {
+            const base = filtrar(encadenable(
+                supabase.from('clientes').select('id, nombre, apellido, telefono, dni_ruc, agente_id'),
+            ))
+            return comoLote<FilaSimple>(
+                (cursor ? base.gt('id', cursor) : base).order('id').limit(limite),
+            )
+        },
+        contar: () => comoConteo(filtrar(
+            encadenable(supabase.from('clientes').select('id', { count: 'exact', head: true })),
+        )),
+    })
+
+    // Se pagina por `id`; el orden de pantalla se aplica sobre la lista ya
+    // completa, porque ordenar cada lote por separado no ordena el conjunto.
+    return clientes.sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), 'es'))
 }

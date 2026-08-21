@@ -84,3 +84,64 @@ describe('getClientes', () => {
         await expect(getClientes()).rejects.toThrow(/clientes activos/i)
     })
 })
+
+/**
+ * La correccion de arriba existia desde hace semanas y la pantalla seguia
+ * mostrando 1000 clientes: `app/(dashboard)/clientes/page.tsx` nunca llamo a
+ * `getClientes()`, se quedo con un `select` propio sin paginar. Escribir el
+ * arreglo y no conectarlo deja exactamente el mismo agujero.
+ *
+ * Hoy en produccion son 1455 clientes activos: 455 invisibles en /clientes y
+ * 455 no seleccionables al crear una cuenta o una referencia.
+ */
+describe('getClientes({ incluirInactivos: true })', () => {
+    it('los incluye, para que la pestana de inactivos no salga siempre vacia', async () => {
+        const { getClientes } = await import('./clientes')
+
+        const lista = await getClientes({ incluirInactivos: true })
+
+        expect(lista.length).toBe(TOTAL + INACTIVOS)
+        expect(lista.some(c => c.activo === false)).toBe(true)
+    })
+
+    it('sin la opcion sigue devolviendo solo activos', async () => {
+        const { getClientes } = await import('./clientes')
+
+        expect((await getClientes()).length).toBe(TOTAL)
+    })
+})
+
+describe('getClientesSimple', () => {
+    it('devuelve los 1326 activos, no los 1000 que cabian', async () => {
+        const { getClientesSimple } = await import('./clientes')
+
+        expect((await getClientesSimple()).length).toBe(TOTAL)
+    })
+
+    it('no cuela los inactivos en el selector', async () => {
+        const { getClientesSimple } = await import('./clientes')
+
+        expect((await getClientesSimple()).every(c => c.nombre !== 'ZZTEST_inactivo')).toBe(true)
+    })
+
+    it('llega ordenado por nombre, no en el orden de paginacion', async () => {
+        // Se pagina por `id`, que en esta base falsa esta desordenado a
+        // proposito respecto al nombre. Si el orden se aplicara por lote y no
+        // sobre el conjunto, esta comprobacion caeria.
+        const { getClientesSimple } = await import('./clientes')
+        const lista = await getClientesSimple()
+
+        for (let i = 1; i < lista.length; i++) {
+            expect(String(lista[i - 1].nombre).localeCompare(String(lista[i].nombre), 'es'))
+                .toBeLessThanOrEqual(0)
+        }
+    })
+
+    it('ABORTA si el servidor recorta por debajo del tamano de lote', async () => {
+        // Media lista en un selector es peor que ninguna: parece completa.
+        maxRows = 400
+        const { getClientesSimple } = await import('./clientes')
+
+        await expect(getClientesSimple()).rejects.toThrow(/selector/i)
+    })
+})
