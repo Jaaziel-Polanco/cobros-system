@@ -1,6 +1,7 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
+import { createClient as createAdminClient } from '@supabase/supabase-js'
 import { revalidatePath } from 'next/cache'
 import { ReferenciaSchema, ReferenciaFormData } from '@/lib/validations/schemas'
 import { renderTemplate, formatMonto, formatFecha } from '@/lib/utils/template-renderer'
@@ -97,7 +98,18 @@ export async function enviarNotificacionReferencia(referenciaId: string, deudaId
     // Filtrado por `evento`: sin él, en cuanto hay un segundo webhook activo
     // (el de boletos) esta consulta deja de poder decidir cuál fila
     // devolver y Postgres responde PGRST116 ("Results contain 2 rows").
-    const { data: webhook, error: webhookError } = await supabase
+    // Mismo motivo que en enviarRecordatorioManual(): la unica policy de
+    // `webhooks` es de admin y RLS filtra en silencio, asi que con el
+    // cliente de sesion un agente veia 0 filas y esta accion le fallaba
+    // siempre. Se lee con el cliente admin; `headers` puede llevar
+    // credenciales del proveedor de WhatsApp y no sale del servidor.
+    const admin = createAdminClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.SUPABASE_SERVICE_ROLE_KEY!,
+        { auth: { autoRefreshToken: false, persistSession: false } }
+    )
+
+    const { data: webhook, error: webhookError } = await admin
         .from('webhooks')
         .select('*')
         .eq('activo', true)

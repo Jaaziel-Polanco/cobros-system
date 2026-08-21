@@ -97,7 +97,27 @@ export async function enviarRecordatorioManual(deudaId: string) {
 
     if (!plantilla) throw new Error(`No hay plantilla activa para etapa: ${deuda.etapa}`)
 
-    const { data: webhook } = await supabase
+    // `webhooks` tiene RLS activo y una unica policy: «webhooks: admin full
+    // access». No hay ninguna de lectura para agentes, y RLS no da error --
+    // FILTRA. Con el cliente de sesion un agente recibia `data: null,
+    // error: null`, indistinguible de "no hay webhook configurado", asi que
+    // esta accion lanzaba y Next.js redactaba el mensaje en produccion.
+    // Resultado medido: 0 recordatorios manuales enviados por agentes en
+    // toda la vida del sistema. Los automaticos nunca se vieron afectados
+    // porque el cron e `intentarEnvioInmediato` ya van por service_role.
+    //
+    // El destino del webhook es configuracion del sistema, no un dato del
+    // agente: se lee con el cliente admin y no sale del servidor. Quien
+    // puede disparar el envio ya lo decide la policy de `deudas`, que solo
+    // deja ver las del propio agente; y `ver_webhooks` sigue gobernando la
+    // pantalla de webhooks, que es lo que de verdad hay que proteger.
+    const admin = createAdminClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.SUPABASE_SERVICE_ROLE_KEY!,
+        { auth: { autoRefreshToken: false, persistSession: false } }
+    )
+
+    const { data: webhook } = await admin
         .from('webhooks')
         .select('*')
         .eq('activo', true)
