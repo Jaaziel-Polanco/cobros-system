@@ -91,7 +91,10 @@ export function CuentasView({
     const handleEnviar = (id: string) => {
         startTransition(async () => {
             try {
-                await enviarRecordatorioManual(id)
+                const r = await enviarRecordatorioManual(id)
+                // El motivo viaja como VALOR devuelto, no como excepción: así
+                // no lo redacta Next.js y el usuario lee la causa real.
+                if (!r.ok) { toast.error(r.motivo); return }
                 toast.success('Recordatorio enviado correctamente')
             } catch (e: unknown) {
                 toast.error(e instanceof Error ? e.message : 'Error al enviar')

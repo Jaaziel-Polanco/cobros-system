@@ -146,17 +146,56 @@ describe('enviarRecordatorioManual', () => {
         dbAdmin = { webhooks: [] }
         const { enviarRecordatorioManual } = await import('./envios')
 
-        await expect(enviarRecordatorioManual(DEUDA))
-            .rejects.toThrow('No hay webhook activo configurado')
+        expect(await enviarRecordatorioManual(DEUDA)).toEqual({
+            ok: false,
+            motivo: 'No hay webhook activo para el evento "cobranza"',
+        })
         expect(espiaFetch).not.toHaveBeenCalled()
     })
 
-    it('no manda nada si la plantilla de la etapa no existe', async () => {
+    // ── LA PROPIEDAD QUE IMPORTA ──
+    // Next.js redacta el mensaje de lo que se LANZA desde una Server Action y
+    // devuelve "An error occurred in the Server Components render...", idéntico
+    // para las seis causas posibles. Devolver el motivo en vez de lanzarlo es
+    // lo único que lo hace llegar al operador. Si alguien vuelve a poner un
+    // throw en una de estas comprobaciones, esta prueba cae.
+    it.each([
+        ['deuda pausada',     () => { dbSesion.deudas[0].pausado = true },     'pausada'],
+        ['deuda saldada',     () => { dbSesion.deudas[0].estado = 'saldado' }, 'saldada'],
+        ['deuda inexistente', () => { dbSesion.deudas = [] },                  'no encontrada'],
+        ['sin plantilla',     () => { dbSesion.plantillas_mensaje = [] },      'plantilla'],
+        ['sin webhook',       () => { dbAdmin = { webhooks: [] } },            'webhook'],
+    ])('devuelve el motivo en vez de lanzarlo: %s', async (_caso, preparar, esperado) => {
+        preparar()
+        const { enviarRecordatorioManual } = await import('./envios')
+
+        // Sin `rejects`: si lanzara, esta línea propagaría y la prueba caería.
+        const r = await enviarRecordatorioManual(DEUDA)
+
+        expect(r.ok).toBe(false)
+        expect((r as { motivo: string }).motivo.toLowerCase()).toContain(esperado)
+        expect(espiaFetch).not.toHaveBeenCalled()
+    })
+
+    it('el motivo nombra la etapa cuando falta su plantilla', async () => {
         dbSesion.plantillas_mensaje = []
         const { enviarRecordatorioManual } = await import('./envios')
 
-        await expect(enviarRecordatorioManual(DEUDA)).rejects.toThrow(/plantilla activa/)
-        expect(espiaFetch).not.toHaveBeenCalled()
+        const r = await enviarRecordatorioManual(DEUDA)
+        expect((r as { motivo: string }).motivo).toContain('mora_alta')
+    })
+
+    it('un webhook que responde con error deja rastro y devuelve el código', async () => {
+        espiaFetch = vi.fn(async () => ({ ok: false, status: 502, text: async () => 'bad gateway' }))
+        vi.stubGlobal('fetch', espiaFetch)
+        const { enviarRecordatorioManual } = await import('./envios')
+
+        const r = await enviarRecordatorioManual(DEUDA)
+
+        expect(r).toMatchObject({ ok: false })
+        expect((r as { motivo: string }).motivo).toContain('502')
+        // Este intento SÍ queda en envios_log: hubo envío de verdad.
+        expect(dbSesion.envios_log[0]).toMatchObject({ estado: 'error', respuesta_http: 502 })
     })
 })
 

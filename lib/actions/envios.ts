@@ -67,10 +67,35 @@ async function fetchWebhookConTimeout(url: string, headers: Record<string, strin
 }
 
 /**
+ * Resultado de un envio manual. Que sea un valor DEVUELTO y no una excepcion
+ * es lo importante: Next.js redacta en produccion el mensaje de cualquier
+ * error lanzado desde una Server Action, y el cliente recibe "An error
+ * occurred in the Server Components render...".
+ *
+ * Para un fallo de programacion esa redaccion esta bien. Para estas
+ * comprobaciones no: "la deuda esta pausada" o "no hay plantilla para esta
+ * etapa" son estados que el operador necesita LEER. Esconderlos detras de un
+ * digest es lo que mantuvo oculto durante meses que ningun agente podia
+ * enviar recordatorios: el sistema decia lo mismo para seis causas distintas.
+ */
+export type ResultadoEnvioManual =
+    | { ok: true; estado: 'enviado'; respuesta_http: number }
+    | { ok: false; motivo: string }
+
+/**
+ * Devuelve el motivo al llamante y ademas lo deja en la salida del contenedor,
+ * por si Next.js no llega a registrar nada.
+ */
+function motivoDeFallo(deudaId: string, motivo: string): ResultadoEnvioManual {
+    console.error(`[RECORDATORIO_MANUAL] deuda=${deudaId} motivo=${motivo}`)
+    return { ok: false, motivo }
+}
+
+/**
  * Envío manual desde la UI: no aplica la ventana de días antes del vencimiento (override del usuario).
  * El cron y `intentarEnvioInmediato` sí respetan preventivo siempre.
  */
-export async function enviarRecordatorioManual(deudaId: string) {
+export async function enviarRecordatorioManual(deudaId: string): Promise<ResultadoEnvioManual> {
     const supabase = await createClient()
 
     const { data: deuda, error: deudaError } = await supabase
@@ -84,9 +109,9 @@ export async function enviarRecordatorioManual(deudaId: string) {
         .eq('id', deudaId)
         .single()
 
-    if (deudaError || !deuda) throw new Error('Deuda no encontrada')
-    if (deuda.estado === 'saldado') throw new Error('La deuda ya está saldada')
-    if (deuda.pausado) throw new Error('La deuda está pausada')
+    if (deudaError || !deuda) return motivoDeFallo(deudaId, 'Deuda no encontrada')
+    if (deuda.estado === 'saldado') return motivoDeFallo(deudaId, 'La deuda ya está saldada')
+    if (deuda.pausado) return motivoDeFallo(deudaId, 'La deuda está pausada')
 
     const { data: plantilla } = await supabase
         .from('plantillas_mensaje')
@@ -95,7 +120,7 @@ export async function enviarRecordatorioManual(deudaId: string) {
         .eq('activo', true)
         .maybeSingle()
 
-    if (!plantilla) throw new Error(`No hay plantilla activa para etapa: ${deuda.etapa}`)
+    if (!plantilla) return motivoDeFallo(deudaId, `No hay plantilla activa para la etapa "${deuda.etapa}"`)
 
     // `webhooks` tiene RLS activo y una unica policy: «webhooks: admin full
     // access». No hay ninguna de lectura para agentes, y RLS no da error --
@@ -124,7 +149,7 @@ export async function enviarRecordatorioManual(deudaId: string) {
         .eq('evento', 'cobranza')
         .maybeSingle()
 
-    if (!webhook) throw new Error('No hay webhook activo configurado')
+    if (!webhook) return motivoDeFallo(deudaId, 'No hay webhook activo para el evento "cobranza"')
 
     const cuotaDisplay = deuda.cuota_mensual
         ? formatMonto(deuda.cuota_mensual)
@@ -197,9 +222,13 @@ export async function enviarRecordatorioManual(deudaId: string) {
     revalidatePath('/logs')
     revalidatePath('/cuentas')
 
-    if (estado === 'error') throw new Error(`Webhook respondió con error ${result.status}: ${result.body}`)
+    // Este si queda registrado en envios_log antes de devolverse: el envio
+    // se intento de verdad y hay rastro del intento fallido.
+    if (estado === 'error') {
+        return motivoDeFallo(deudaId, `El webhook respondió ${result.status}: ${result.body}`)
+    }
 
-    return { ok: true, estado, respuesta_http: result.status }
+    return { ok: true, estado: 'enviado', respuesta_http: result.status }
 }
 
 /**
