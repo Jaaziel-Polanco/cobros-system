@@ -1,6 +1,10 @@
 import { createClient } from '@supabase/supabase-js'
 import { notFound } from 'next/navigation'
-import type { Ticket } from '@/lib/types'
+import type { Ticket, ConfiguracionTicket } from '@/lib/types'
+import {
+    CFG_TICKET_POR_DEFECTO, COLUMNAS_SORTEO_DEMO, TOKEN_DEMO,
+    construirTicketDePrueba, elegirSorteoDemo,
+} from '@/lib/tickets/boleto-demo'
 
 export const dynamic = 'force-dynamic'
 
@@ -15,15 +19,38 @@ export default async function BoletoPublicoPage(
         { auth: { autoRefreshToken: false, persistSession: false } },
     )
 
-    const { data } = await supabase
-        .from('tickets')
-        .select('*')
-        .eq('token_publico', token)
-        .maybeSingle()
+    const esEjemplo = token === TOKEN_DEMO
 
-    if (!data) notFound()
+    let ticket: Ticket
+    if (esEjemplo) {
+        // El boleto de ejemplo se arma en memoria con los datos reales del
+        // negocio y un cliente inventado: no está en `tickets` a propósito.
+        // El porqué, en lib/tickets/boleto-demo.ts.
+        const { data: cfg } = await supabase
+            .from('configuracion_ticket').select('*').eq('id', true).maybeSingle()
 
-    const ticket = data as Ticket
+        const { data: sorteos } = await supabase
+            .from('sorteos')
+            .select(COLUMNAS_SORTEO_DEMO)
+            .in('estado', ['activo', 'borrador'])
+            .order('created_at', { ascending: false })
+            .limit(50)
+
+        ticket = construirTicketDePrueba(
+            (cfg as ConfiguracionTicket | null) ?? CFG_TICKET_POR_DEFECTO,
+            elegirSorteoDemo(sorteos),
+        )
+    } else {
+        const { data } = await supabase
+            .from('tickets')
+            .select('*')
+            .eq('token_publico', token)
+            .maybeSingle()
+
+        if (!data) notFound()
+        ticket = data as Ticket
+    }
+
     const s = ticket.snapshot
     const anulado = ticket.estado === 'anulado'
 
@@ -37,6 +64,14 @@ export default async function BoletoPublicoPage(
                 <h1 className="mt-6 text-xs uppercase tracking-[0.3em] text-slate-400">
                     Boleto de sorteo
                 </h1>
+
+                {/* Que nadie confunda el ejemplo con un boleto suyo. */}
+                {esEjemplo && (
+                    <p className="mt-3 rounded-lg bg-amber-500/15 px-3 py-2 text-xs font-semibold text-amber-300">
+                        Boleto de ejemplo. Los datos del cliente son ficticios
+                        y este número no participa en ningún sorteo.
+                    </p>
+                )}
 
                 <p className={`mt-3 text-4xl font-bold tracking-widest ${anulado ? 'text-slate-600 line-through' : 'text-white'}`}>
                     {ticket.numero_formateado}

@@ -74,59 +74,26 @@ export interface ResultadoPruebaWebhook extends PruebaWebhook {
     body?: string
 }
 
-/** Configuración de boletos mínima si la fila todavía no existe. */
-export const CFG_TICKET_POR_DEFECTO: ConfiguracionTicket = {
-    id: true,
-    nombre_comercial: 'Inversiones Cordero',
-    rnc: null,
-    direccion: null,
-    telefono: null,
-    logo_url: null,
-    texto_legal: null,
-    url_terminos: null,
-    prefijo_numeracion: 'BOL',
-    pie_impresion: null,
-    modo_adjunto: 'base64',
-    updated_at: new Date(0).toISOString(),
-    updated_by: null,
-}
 
-/** UUID nulo con un dígito final: imposible que colisione con datos reales. */
-const UUID_CLIENTE = '00000000-0000-0000-0000-000000000001'
 const UUID_DEUDA = '00000000-0000-0000-0000-000000000002'
 const UUID_AGENTE = '00000000-0000-0000-0000-000000000003'
-const UUID_TICKET = '00000000-0000-0000-0000-000000000004'
-const UUID_SORTEO = '00000000-0000-0000-0000-000000000005'
 
 /**
- * El número 0 no lo puede tener ningún boleto real: la numeración de cada
- * sorteo arranca en 1 (`ultimo_numero + 1` en emitir_ticket). Así el boleto
- * de prueba conserva el formato exacto de producción y aun así es
- * inconfundible.
+ * El boleto ficticio vive en `lib/tickets/boleto-demo.ts` porque lo
+ * comparten tres sitios: esta prueba, la página pública `/t/demo` y la
+ * descarga `/api/tickets/demo/pdf`. Se re-exporta para no obligar a nadie
+ * a importar de dos módulos.
  */
-const NUMERO_PRUEBA = 0
+export {
+    CFG_TICKET_POR_DEFECTO,
+    TELEFONO_PRUEBA_FALLBACK,
+    TOKEN_DEMO,
+    construirTicketDePrueba,
+    telefonoDePrueba,
+    type SorteoDePrueba,
+} from '@/lib/tickets/boleto-demo'
 
-/** Token público ficticio: `/t/<token>` NO resuelve, y debe notarse. */
-export const TOKEN_PUBLICO_PRUEBA = 'prueba-no-corresponde-a-ningun-boleto'
-
-/** Si no hay teléfono del negocio configurado. Ver `telefonoDePrueba()`. */
-export const TELEFONO_PRUEBA_FALLBACK = '8095550000'
-
-/**
- * A qué número va la prueba.
- *
- * Al teléfono del NEGOCIO, no a uno inventado: si el flujo de n8n llega
- * hasta el envío, el WhatsApp con el PDF adjunto le cae a quien pulsó el
- * botón. Eso es justamente lo que hace útil una prueba de boletos -- se ve
- * el mensaje y se abre el PDF -- y evita molestar a un tercero al que le
- * hubiera tocado por azar el número ficticio.
- */
-export function telefonoDePrueba(
-    cfg?: Pick<ConfiguracionTicket, 'telefono'> | null,
-): string {
-    const t = cfg?.telefono?.trim()
-    return t && t.replace(/\D/g, '').length >= 10 ? t : TELEFONO_PRUEBA_FALLBACK
-}
+import { UUID_CLIENTE_DEMO as UUID_CLIENTE } from '@/lib/tickets/boleto-demo'
 
 export const MENSAJE_COBRANZA_POR_DEFECTO =
     'Estimado Juan Pérez, le recordamos que tiene un saldo pendiente de ' +
@@ -182,91 +149,6 @@ export function construirPayloadPruebaCobranza(opciones: {
         mensaje,
         agente: { id: UUID_AGENTE, nombre: 'Agente de Prueba' },
         _test: true,
-    }
-}
-
-/** El sorteo real que se usaría; `null` si no hay ninguno activo. */
-export interface SorteoDePrueba {
-    id: string
-    nombre: string
-    premio: string | null
-    fecha_fin: string
-    prefijo: string
-}
-
-/**
- * Boleto ficticio con la MISMA forma que uno real, para que el PDF salga
- * del mismo `TicketDocument` que usa producción. El snapshot se llena con
- * la configuración real del negocio: si el logo, el RNC o el texto legal
- * están mal puestos, la prueba lo enseña en el PDF.
- */
-export function construirTicketDePrueba(
-    cfg: ConfiguracionTicket,
-    sorteo: SorteoDePrueba | null,
-    ahora: Date = new Date(),
-): Ticket {
-    const emitidoAt = ahora.toISOString()
-    const secuencia = String(NUMERO_PRUEBA).padStart(6, '0')
-    const numeroFormateado = sorteo
-        ? `${sorteo.prefijo}-${secuencia}`
-        : `${cfg.prefijo_numeracion}-SN-${secuencia}`
-
-    return {
-        id: UUID_TICKET,
-        numero: NUMERO_PRUEBA,
-        numero_formateado: numeroFormateado,
-        sorteo_id: sorteo?.id ?? null,
-        cliente_id: UUID_CLIENTE,
-        pago_id: null,
-        deuda_id: null,
-        origen: 'manual',
-        motivo: 'Envío de prueba desde la pantalla de Webhooks',
-        estado: 'valido',
-        anulado_por: null,
-        anulado_at: null,
-        motivo_anulacion: null,
-        token_publico: TOKEN_PUBLICO_PRUEBA,
-        snapshot: {
-            cliente: {
-                id: UUID_CLIENTE,
-                nombre: 'Juan',
-                apellido: 'Pérez',
-                telefono: telefonoDePrueba(cfg),
-                dni_ruc: '00100000001',
-            },
-            sorteo: sorteo
-                ? {
-                    id: sorteo.id,
-                    nombre: sorteo.nombre,
-                    premio: sorteo.premio,
-                    fecha_fin: sorteo.fecha_fin,
-                }
-                : {
-                    id: UUID_SORTEO,
-                    nombre: 'Sorteo de Prueba',
-                    premio: 'Premio de ejemplo',
-                    fecha_fin: new Date(ahora.getTime() + 30 * 86_400_000)
-                        .toISOString().split('T')[0],
-                },
-            negocio: {
-                nombre_comercial: cfg.nombre_comercial,
-                rnc: cfg.rnc,
-                direccion: cfg.direccion,
-                telefono: cfg.telefono,
-                texto_legal: cfg.texto_legal,
-                url_terminos: cfg.url_terminos,
-                pie_impresion: cfg.pie_impresion,
-                logo_url: cfg.logo_url,
-            },
-            emitido_at_rd: formatearFechaHoraRD(emitidoAt),
-            origen: 'manual',
-            version_snapshot: 1,
-        },
-        emitido_por: null,
-        emitido_at: emitidoAt,
-        veces_enviado: 0,
-        veces_impreso: 0,
-        created_at: emitidoAt,
     }
 }
 

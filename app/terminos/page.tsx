@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
 import { redirect } from 'next/navigation'
+import { headers } from 'next/headers'
 import type { Metadata } from 'next'
 import { resolverRedireccionTerminos } from '@/lib/utils/terminos'
 
@@ -278,7 +279,19 @@ export default async function TerminosPage() {
         .eq('id', true)
         .maybeSingle()
 
-    const externa = resolverRedireccionTerminos(cfg?.url_terminos, process.env.APP_PUBLIC_URL)
+    // El origen con el que llegó la petición es la autoridad sobre «esta
+    // misma página»: `APP_PUBLIC_URL` puede quedarse vieja al montar un
+    // dominio nuevo, y eso fue exactamente lo que dejó `/terminos`
+    // redirigiendo a sí misma. Se pasan los dos; basta con que uno case.
+    const cabeceras = await headers()
+    const host = cabeceras.get('x-forwarded-host') ?? cabeceras.get('host')
+    const protocolo = cabeceras.get('x-forwarded-proto') ?? 'https'
+    const origenPeticion = host ? `${protocolo}://${host}` : undefined
+
+    const externa = resolverRedireccionTerminos(
+        cfg?.url_terminos,
+        [process.env.APP_PUBLIC_URL, origenPeticion],
+    )
     if (externa) redirect(externa)
 
     return (

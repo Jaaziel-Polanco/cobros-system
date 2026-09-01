@@ -87,4 +87,80 @@ describe('resolverRedireccionTerminos', () => {
                 .toBeNull()
         })
     })
+
+    /**
+     * EL CASO REAL DEL 2026-09-01, que la versión de un solo origen no
+     * atrapaba. Medido contra producción antes de la corrección:
+     *
+     *   $ curl -I https://sorteo.inversioneshectorcordero.com/terminos
+     *   307 -> https://sorteo.inversioneshectorcordero.com/terminos
+     *
+     * La app se servía desde el dominio nuevo, `APP_PUBLIC_URL` seguía
+     * apuntando al host de Easypanel y `url_terminos` era la del dominio
+     * nuevo: la guarda comparaba contra el origen que no era.
+     */
+    describe('el bucle que sí ocurrió: varios orígenes propios', () => {
+        const EASYPANEL = 'https://negocio-ia-cuentas-por-cobrar.bkrj0h.easypanel.host'
+        const SORTEO = 'https://sorteo.inversioneshectorcordero.com'
+
+        it('corta el bucle si el dominio de la petición coincide, aunque APP_PUBLIC_URL no', () => {
+            expect(resolverRedireccionTerminos(`${SORTEO}/terminos`, [EASYPANEL, SORTEO]))
+                .toBeNull()
+        })
+
+        it('reproduce el fallo: con solo APP_PUBLIC_URL, redirigía a sí misma', () => {
+            // Esto es lo que hacía la versión anterior. Se deja escrito para
+            // que se vea que el defecto era real y cuál era su forma.
+            expect(resolverRedireccionTerminos(`${SORTEO}/terminos`, EASYPANEL))
+                .toBe(`${SORTEO}/terminos`)
+        })
+
+        it('basta con que coincida UNO de los orígenes, en cualquier posición', () => {
+            expect(resolverRedireccionTerminos(`${SORTEO}/terminos`, [SORTEO, EASYPANEL]))
+                .toBeNull()
+            expect(resolverRedireccionTerminos(`${EASYPANEL}/terminos`, [EASYPANEL, SORTEO]))
+                .toBeNull()
+        })
+
+        it('ignora los huecos y las bases mal escritas de la lista', () => {
+            expect(resolverRedireccionTerminos(
+                `${SORTEO}/terminos`, [undefined, 'no-es-una-url', null, SORTEO],
+            )).toBeNull()
+        })
+
+        it('sigue redirigiendo a los términos de OTRO dominio', () => {
+            expect(resolverRedireccionTerminos(
+                'https://otra-empresa.do/terminos', [EASYPANEL, SORTEO],
+            )).toBe('https://otra-empresa.do/terminos')
+        })
+
+        it('una lista vacía cae al localhost, no deja de comprobar', () => {
+            expect(resolverRedireccionTerminos('http://localhost:3000/terminos', []))
+                .toBeNull()
+        })
+
+        /**
+         * Medido al reproducirlo en local con el Host del dominio real: la
+         * petición llega al contenedor por http aunque el navegador hable
+         * https, así que comparar el ORIGEN entero dejaba pasar el bucle.
+         *
+         *   host = sorteo.inversioneshectorcordero.com, protocolo = http
+         *   url_terminos = https://sorteo.inversioneshectorcordero.com/terminos
+         *
+         * Dos orígenes distintos, el mismo sitio, bucle igual. Se compara
+         * el host.
+         */
+        it('corta el bucle aunque el esquema no coincida (proxy: http dentro, https fuera)', () => {
+            expect(resolverRedireccionTerminos(
+                `${SORTEO}/terminos`,
+                ['http://sorteo.inversioneshectorcordero.com'],
+            )).toBeNull()
+        })
+
+        it('el puerto sí cuenta: otro puerto es otro sitio', () => {
+            expect(resolverRedireccionTerminos(
+                'http://localhost:3000/terminos', ['http://localhost:4000'],
+            )).toBe('http://localhost:3000/terminos')
+        })
+    })
 })

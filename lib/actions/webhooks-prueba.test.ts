@@ -39,7 +39,7 @@ vi.mock('@/lib/pdf/ticket-document', () => ({
 }))
 
 import { testWebhook, previsualizarPruebaWebhook } from './webhooks'
-import { TOKEN_PUBLICO_PRUEBA } from '@/lib/webhooks/payload-prueba'
+import { TOKEN_DEMO } from '@/lib/webhooks/payload-prueba'
 
 const WH_TICKET = 'wh-ticket'
 const WH_COBRANZA = 'wh-cobranza'
@@ -209,7 +209,7 @@ describe('la prueba de boletos va completa', () => {
         await testWebhook(WH_TICKET)
         const cuerpo = cuerpoEnviado()
 
-        expect(cuerpo.url_publica).toContain(`/t/${TOKEN_PUBLICO_PRUEBA}`)
+        expect(cuerpo.url_publica).toContain(`/t/${TOKEN_DEMO}`)
         expect(cuerpo.url_terminos).toBe('https://ejemplo.test/terminos')
     })
 })

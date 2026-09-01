@@ -220,8 +220,9 @@ async function armarPruebaTicket(): Promise<PruebaArmada> {
     const urlPublica = incluirUrl ? `${base}/t/${ticket.token_publico}` : null
     if (incluirUrl) {
         avisos.push(
-            'La `url_publica` de la prueba apunta a un boleto que no existe: ' +
-            'dará 404 si la abres. En un envío real sí resuelve.',
+            `La \`url_publica\` apunta al boleto de ejemplo (${urlPublica}). ` +
+            'Es una página real y pública, con datos ficticios: sirve para ' +
+            'probar el botón de la plantilla de WhatsApp.',
         )
     }
 
