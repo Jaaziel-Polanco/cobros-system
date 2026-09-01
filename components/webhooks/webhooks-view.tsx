@@ -193,19 +193,26 @@ function WebhookTestModal({ open, onClose, webhook }: { open: boolean; onClose: 
 
     return (
         <Dialog open={open} onOpenChange={v => { if (!v) { setResult(null); onClose() } }}>
-            <DialogContent className="bg-slate-900 border-white/10 text-white max-w-2xl">
-                <DialogHeader>
+            {/* `DialogContent` es un grid, y un hijo de grid tiene
+                `min-width: auto`: el <pre> del payload imponía su ancho
+                natural y estiraba el modal fuera de la pantalla, con
+                `overflow-auto` y todo. De ahí los `min-w-0` de aquí abajo,
+                que son los que dejan que el recorte funcione. El
+                `max-h-[85dvh]` es para que el modal quepa a lo alto cuando
+                hay varios avisos, en vez de salirse por abajo. */}
+            <DialogContent className="bg-slate-900 border-white/10 text-white max-w-2xl min-w-0 max-h-[85dvh] overflow-y-auto">
+                <DialogHeader className="min-w-0">
                     <DialogTitle className="flex items-center gap-2">
                         <TestTube className="w-5 h-5 text-indigo-400" />
                         Probar Webhook
                     </DialogTitle>
                 </DialogHeader>
-                <div className="space-y-4 mt-2">
+                <div className="space-y-4 mt-2 min-w-0">
                     {/* Webhook info */}
-                    <div className="p-3 rounded-xl bg-slate-800/50 border border-white/5 space-y-1">
-                        <div className="flex items-center gap-2">
-                            <p className="text-sm font-semibold text-white">{webhook?.nombre}</p>
-                            <span className={cn('text-[10px] px-2 py-0.5 rounded-full font-medium',
+                    <div className="p-3 rounded-xl bg-slate-800/50 border border-white/5 space-y-1 min-w-0">
+                        <div className="flex items-center gap-2 min-w-0">
+                            <p className="text-sm font-semibold text-white truncate">{webhook?.nombre}</p>
+                            <span className={cn('text-[10px] px-2 py-0.5 rounded-full font-medium shrink-0',
                                 esBoletos ? 'bg-indigo-500/20 text-indigo-300' : 'bg-sky-500/20 text-sky-300')}>
                                 {esBoletos ? 'Boletos' : 'Cobranza'}
                             </span>
@@ -220,11 +227,13 @@ function WebhookTestModal({ open, onClose, webhook }: { open: boolean; onClose: 
 
                     {/* Avisos: en qué se diferencia esta prueba de un envío real */}
                     {vista && vista.avisos.length > 0 && (
-                        <ul className="space-y-1.5">
+                        <ul className="space-y-1.5 min-w-0">
                             {vista.avisos.map((a, i) => (
-                                <li key={i} className="flex gap-2 text-xs text-amber-200/90 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2.5">
+                                <li key={i} className="flex gap-2 text-xs text-amber-200/90 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2.5 min-w-0">
                                     <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-400" />
-                                    <span>{a}</span>
+                                    {/* Los avisos llevan URLs y rutas sin espacios:
+                                        sin `break-words` empujan la caja a lo ancho. */}
+                                    <span className="min-w-0 break-words">{a}</span>
                                 </li>
                             ))}
                         </ul>
@@ -232,26 +241,26 @@ function WebhookTestModal({ open, onClose, webhook }: { open: boolean; onClose: 
 
                     {/* Adjunto */}
                     {vista?.adjunto && (
-                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-300 bg-slate-800/50 border border-white/5 rounded-lg p-2.5">
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-300 bg-slate-800/50 border border-white/5 rounded-lg p-2.5 min-w-0">
                             <Paperclip className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-                            <span className="font-mono truncate">{vista.adjunto.nombre}</span>
-                            <span className="text-slate-500">
+                            <span className="font-mono truncate min-w-0">{vista.adjunto.nombre}</span>
+                            <span className="text-slate-500 break-words min-w-0">
                                 {formatearTamano(vista.adjunto.bytes_pdf)} · {vista.adjunto.caracteres_base64.toLocaleString('es-DO')} caracteres en base64
                             </span>
                         </div>
                     )}
 
                     {/* Payload */}
-                    <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+                    <div className="space-y-2 min-w-0">
+                        <div className="flex items-center justify-between gap-2 min-w-0">
+                            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide min-w-0">
                                 {result ? 'Payload enviado' : 'Payload que se enviará'} (datos ficticios)
                             </p>
                             <Button
                                 type="button"
                                 variant="ghost"
                                 size="sm"
-                                className="text-slate-400 hover:text-white h-7 px-2"
+                                className="text-slate-400 hover:text-white h-7 px-2 shrink-0"
                                 onClick={() => setShowPayload(!showPayload)}
                             >
                                 {showPayload ? <EyeOff className="w-3.5 h-3.5 mr-1" /> : <Eye className="w-3.5 h-3.5 mr-1" />}
@@ -259,7 +268,12 @@ function WebhookTestModal({ open, onClose, webhook }: { open: boolean; onClose: 
                             </Button>
                         </div>
                         {showPayload && (
-                            <pre className="text-xs text-slate-300 bg-slate-950 border border-white/5 rounded-xl p-4 overflow-auto max-h-64 font-mono">
+                            // El JSON scrollea DENTRO de su caja, en los dos
+                            // ejes: `max-w-full` + el `min-w-0` de los padres
+                            // es lo que impide que estire el modal. Se deja
+                            // sin ajuste de línea a propósito: partir un JSON
+                            // por la mitad lo vuelve ilegible.
+                            <pre className="text-xs text-slate-300 bg-slate-950 border border-white/5 rounded-xl p-4 overflow-auto max-h-64 max-w-full font-mono">
                                 {cargando && 'Armando el payload de prueba...'}
                                 {!cargando && previewError}
                                 {!cargando && !previewError && vista && JSON.stringify(vista.payload, null, 2)}
@@ -270,14 +284,14 @@ function WebhookTestModal({ open, onClose, webhook }: { open: boolean; onClose: 
                     {/* Resultado */}
                     {result && (
                         <div className={cn(
-                            'p-3 rounded-xl border space-y-2',
+                            'p-3 rounded-xl border space-y-2 min-w-0',
                             result.ok ? 'bg-green-500/10 border-green-500/20' : 'bg-red-500/10 border-red-500/20'
                         )}>
-                            <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-3 min-w-0">
                                 {result.ok
                                     ? <CheckCircle className="w-5 h-5 text-green-400 shrink-0" />
                                     : <XCircle className="w-5 h-5 text-red-400 shrink-0" />}
-                                <div>
+                                <div className="min-w-0">
                                     <p className={cn('text-sm font-semibold', result.ok ? 'text-green-300' : 'text-red-300')}>
                                         {result.ok ? 'El webhook aceptó el envío' : 'El webhook no aceptó el envío'}
                                     </p>
@@ -287,7 +301,11 @@ function WebhookTestModal({ open, onClose, webhook }: { open: boolean; onClose: 
                                 </div>
                             </div>
                             {result.body && (
-                                <pre className="text-[11px] text-slate-400 bg-slate-950/60 rounded-lg p-2.5 overflow-auto max-h-32 font-mono whitespace-pre-wrap">
+                                // La respuesta del webhook puede ser un HTML de
+                                // error de una sola línea kilométrica: aquí sí
+                                // se parte, porque no hay estructura que
+                                // preservar.
+                                <pre className="text-[11px] text-slate-400 bg-slate-950/60 rounded-lg p-2.5 overflow-auto max-h-32 max-w-full font-mono whitespace-pre-wrap break-all">
                                     {result.body}
                                 </pre>
                             )}
