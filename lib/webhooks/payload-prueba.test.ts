@@ -90,6 +90,40 @@ describe('detalles que deciden a quién le llega la prueba', () => {
     })
 })
 
+describe('el sorteo viaja entero en el payload', () => {
+    it('lleva id, nombre, premio y fecha_fin, no sólo el nombre', () => {
+        const ticket = construirTicketDePrueba(CFG, SORTEO)
+        const payload = construirPayloadPruebaTicket({
+            ticket, cfg: CFG, plantillaContenido: null, base64: null, urlPublica: null,
+        })
+
+        expect(payload.ticket.sorteo).toEqual({
+            id: 's-1',
+            nombre: 'FINANCIA, PAGA Y GANA',
+            premio: 'iPhone 13 Pro Max',
+            fecha_fin: '2026-12-04',
+        })
+    })
+
+    it('un boleto sin sorteo en el snapshot manda `sorteo: null`', () => {
+        const ticket = construirTicketDePrueba(CFG, SORTEO)
+        // Los 5 boletos reales de producción están así: se emitieron sin
+        // ningún sorteo activo, con `snapshot.sorteo` a NULL.
+        const sinSorteo = {
+            ...ticket,
+            snapshot: { ...ticket.snapshot, sorteo: null },
+        }
+
+        const payload = construirPayloadPruebaTicket({
+            ticket: sinSorteo, cfg: CFG, plantillaContenido: null,
+            base64: null, urlPublica: null,
+        })
+
+        expect(payload.ticket.sorteo).toBeNull()
+        expect(payload.mensaje).toContain('nuestro sorteo')
+    })
+})
+
 describe('payloadParaMostrar', () => {
     it('elide el base64 y reporta su tamaño', () => {
         const ticket = construirTicketDePrueba(CFG, SORTEO)

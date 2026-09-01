@@ -445,7 +445,17 @@ async function construirPayloadTicket(
         ticket: {
             id: ticket.id,
             numero: ticket.numero_formateado,
-            sorteo: s.sorteo?.nombre ?? null,
+            // El sorteo entero: el snapshot ya lo tiene congelado con
+            // premio y fecha, y mandar sólo el nombre obligaba a n8n a
+            // consultarlos aparte para poder nombrarlos en el mensaje.
+            sorteo: s.sorteo
+                ? {
+                    id: s.sorteo.id,
+                    nombre: s.sorteo.nombre,
+                    premio: s.sorteo.premio,
+                    fecha_fin: s.sorteo.fecha_fin,
+                }
+                : null,
             emitido_at: ticket.emitido_at,
         },
         mensaje,

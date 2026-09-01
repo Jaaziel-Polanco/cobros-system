@@ -163,7 +163,32 @@ describe('la prueba de boletos va completa', () => {
 
         expect(cuerpo.ticket.numero).toBe('SPG126-000000')
         expect(cuerpo.adjunto.nombre).toBe('boleto-SPG126-000000.pdf')
-        expect(cuerpo.ticket.sorteo).toBe('FINANCIA, PAGA Y GANA')
+        expect(cuerpo.ticket.sorteo.nombre).toBe('FINANCIA, PAGA Y GANA')
+    })
+
+    it('el sorteo viaja entero: fecha y premio, no sólo el nombre', async () => {
+        await testWebhook(WH_TICKET)
+        const { sorteo } = cuerpoEnviado().ticket
+
+        expect(sorteo).toEqual({
+            id: 's-1',
+            nombre: 'FINANCIA, PAGA Y GANA',
+            premio: 'iPhone 13',
+            fecha_fin: '2026-12-04',
+        })
+    })
+
+    it('sin ningún sorteo en la base, el ficticio también lleva fecha', async () => {
+        db.sorteos = []
+
+        await testWebhook(WH_TICKET)
+        const { sorteo } = cuerpoEnviado().ticket
+
+        // La prueba no manda `sorteo: null`: un payload sin sorteo no deja
+        // mapear el bloque en n8n, que es para lo que se prueba.
+        expect(sorteo.nombre).toBe('Sorteo de Prueba')
+        expect(sorteo.fecha_fin).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+        expect(sorteo.premio).toBeTruthy()
     })
 
     it('el mensaje sale de la plantilla activa de boletos, ya renderizado', async () => {

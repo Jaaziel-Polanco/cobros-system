@@ -321,7 +321,14 @@ export function construirPayloadPruebaTicket(opciones: {
         ticket: {
             id: ticket.id,
             numero: ticket.numero_formateado,
-            sorteo: s.sorteo?.nombre ?? null,
+            sorteo: s.sorteo
+                ? {
+                    id: s.sorteo.id,
+                    nombre: s.sorteo.nombre,
+                    premio: s.sorteo.premio,
+                    fecha_fin: s.sorteo.fecha_fin,
+                }
+                : null,
             emitido_at: ticket.emitido_at,
         },
         mensaje,

@@ -247,7 +247,24 @@ export interface TicketWebhookPayload {
     ticket: {
         id: string
         numero: string
-        sorteo: string | null
+        /**
+         * El sorteo entero, no sólo su nombre.
+         *
+         * Hasta el 2026-09-01 esto era un `string | null` con el nombre y
+         * nada más: el snapshot ya guardaba `id`, `premio` y `fecha_fin` y
+         * el payload los tiraba, así que n8n no podía escribir «el sorteo
+         * se celebra el 04/12» sin ir a buscarlos a la base. Cambiarlo de
+         * forma salió gratis: no había ni un envío de boletos correcto en
+         * toda la vida del sistema (0 `ticket_eventos` con tipo
+         * `enviado_wa` y estado `ok`), así que nadie consumía la anterior.
+         */
+        sorteo: {
+            id: string
+            nombre: string
+            premio: string | null
+            /** Fecha del sorteo, `YYYY-MM-DD`. */
+            fecha_fin: string
+        } | null
         emitido_at: string
     }
     mensaje: string
