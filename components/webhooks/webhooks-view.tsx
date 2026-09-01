@@ -5,7 +5,11 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { toast } from 'sonner'
 import { WebhookSchema, WebhookFormData } from '@/lib/validations/schemas'
-import { createWebhook, updateWebhook, deleteWebhook, testWebhook } from '@/lib/actions/webhooks'
+import {
+    createWebhook, updateWebhook, deleteWebhook, testWebhook,
+    previsualizarPruebaWebhook,
+} from '@/lib/actions/webhooks'
+import type { PruebaWebhook, ResultadoPruebaWebhook } from '@/lib/webhooks/payload-prueba'
 import { Webhook } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -18,7 +22,7 @@ import {
     AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
     AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { Plus, Pencil, Trash2, Loader2, Webhook as WebhookIcon, CheckCircle, XCircle, TestTube, Send, Eye, EyeOff } from 'lucide-react'
+import { Plus, Pencil, Trash2, Loader2, Webhook as WebhookIcon, CheckCircle, XCircle, TestTube, Send, Eye, EyeOff, AlertTriangle, Paperclip } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface WebhooksViewProps { webhooks: Webhook[] }
@@ -132,50 +136,54 @@ function WebhookFormModal({ open, onClose, webhook }: { open: boolean; onClose: 
     )
 }
 
+/** «48.213 caracteres · ~35 KB»: el tamaño importa, n8n y WhatsApp tienen topes. */
+function formatearTamano(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+}
+
 function WebhookTestModal({ open, onClose, webhook }: { open: boolean; onClose: () => void; webhook: Webhook | null }) {
     const [isPending, startTransition] = useTransition()
-    const [result, setResult] = useState<{ ok: boolean; status: number; body?: string } | null>(null)
+    const [result, setResult] = useState<ResultadoPruebaWebhook | null>(null)
+    const [preview, setPreview] = useState<PruebaWebhook | null>(null)
+    const [previewError, setPreviewError] = useState<string | null>(null)
+    const [cargando, setCargando] = useState(false)
     const [showPayload, setShowPayload] = useState(true)
 
-    const samplePayload = {
-        evento: 'recordatorio_cobranza',
-        timestamp: new Date().toISOString(),
-        enviado_por: 'manual',
-        etapa: 'mora_temprana',
-        tipo_destino: 'cliente',
-        cliente: {
-            id: '00000000-0000-0000-0000-000000000001',
-            nombre: 'Juan',
-            apellido: 'Pérez',
-            telefono: '809-555-1234',
-            email: 'juan.perez@ejemplo.com',
-        },
-        deuda: {
-            id: '00000000-0000-0000-0000-000000000002',
-            monto_original: 50000.00,
-            saldo_pendiente: 35000.00,
-            tasa_interes: 2.5,
-            fecha_corte: '2026-03-01',
-            dias_atraso: 15,
-        },
-        mensaje: 'Estimado Juan Pérez, le recordamos que tiene un saldo pendiente de RD$35,000.00. Favor contactarnos para coordinar su pago. — Inversiones Cordero',
-        agente: {
-            id: '00000000-0000-0000-0000-000000000003',
-            nombre: 'María García',
-        },
-    }
+    // El payload lo arma el SERVIDOR y se pide al abrir. Antes había aquí
+    // una copia escrita a mano que ni siquiera coincidía con la que enviaba
+    // la Server Action: la pantalla enseñaba `recordatorio_cobranza` y el
+    // POST llevaba `test_conexion`. Ahora es el mismo objeto, con el base64
+    // del PDF sustituido por su tamaño para no colgar la pestaña.
+    useEffect(() => {
+        if (!open || !webhook) {
+            setPreview(null); setPreviewError(null); setResult(null)
+            return
+        }
+        let vigente = true
+        setCargando(true)
+        setPreviewError(null)
+        previsualizarPruebaWebhook(webhook.id)
+            .then(p => { if (vigente) setPreview(p) })
+            .catch((e: unknown) => {
+                if (vigente) setPreviewError(e instanceof Error ? e.message : 'No se pudo armar el payload de prueba')
+            })
+            .finally(() => { if (vigente) setCargando(false) })
+        return () => { vigente = false }
+    }, [open, webhook])
+
+    const vista: PruebaWebhook | null = result ?? preview
+    const esBoletos = webhook?.evento === 'ticket'
 
     const handleSendTest = () => {
         if (!webhook) return
         startTransition(async () => {
             try {
                 const res = await testWebhook(webhook.id)
-                setResult(res as { ok: boolean; status: number; body?: string })
-                if (res.ok) {
-                    toast.success(`Prueba exitosa — HTTP ${res.status}`)
-                } else {
-                    toast.error(`Respuesta HTTP ${res.status}`)
-                }
+                setResult(res)
+                if (res.ok) toast.success(`Prueba enviada — HTTP ${res.status}`)
+                else toast.error(`Respuesta HTTP ${res.status}`)
             } catch (e: unknown) {
                 toast.error(e instanceof Error ? e.message : 'Error al enviar prueba')
                 setResult(null)
@@ -195,14 +203,50 @@ function WebhookTestModal({ open, onClose, webhook }: { open: boolean; onClose: 
                 <div className="space-y-4 mt-2">
                     {/* Webhook info */}
                     <div className="p-3 rounded-xl bg-slate-800/50 border border-white/5 space-y-1">
-                        <p className="text-sm font-semibold text-white">{webhook?.nombre}</p>
+                        <div className="flex items-center gap-2">
+                            <p className="text-sm font-semibold text-white">{webhook?.nombre}</p>
+                            <span className={cn('text-[10px] px-2 py-0.5 rounded-full font-medium',
+                                esBoletos ? 'bg-indigo-500/20 text-indigo-300' : 'bg-sky-500/20 text-sky-300')}>
+                                {esBoletos ? 'Boletos' : 'Cobranza'}
+                            </span>
+                        </div>
                         <p className="text-xs text-slate-500 font-mono truncate">{webhook?.url}</p>
+                        <p className="text-xs text-slate-400">
+                            {esBoletos
+                                ? 'Se envía un boleto ficticio completo: mensaje, sorteo y el PDF en base64.'
+                                : 'Se envía un recordatorio de cobranza ficticio, con la misma forma que el real.'}
+                        </p>
                     </div>
 
-                    {/* Payload preview */}
+                    {/* Avisos: en qué se diferencia esta prueba de un envío real */}
+                    {vista && vista.avisos.length > 0 && (
+                        <ul className="space-y-1.5">
+                            {vista.avisos.map((a, i) => (
+                                <li key={i} className="flex gap-2 text-xs text-amber-200/90 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2.5">
+                                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-400" />
+                                    <span>{a}</span>
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+
+                    {/* Adjunto */}
+                    {vista?.adjunto && (
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-300 bg-slate-800/50 border border-white/5 rounded-lg p-2.5">
+                            <Paperclip className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                            <span className="font-mono truncate">{vista.adjunto.nombre}</span>
+                            <span className="text-slate-500">
+                                {formatearTamano(vista.adjunto.bytes_pdf)} · {vista.adjunto.caracteres_base64.toLocaleString('es-DO')} caracteres en base64
+                            </span>
+                        </div>
+                    )}
+
+                    {/* Payload */}
                     <div className="space-y-2">
                         <div className="flex items-center justify-between">
-                            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Payload de prueba (datos ficticios)</p>
+                            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+                                {result ? 'Payload enviado' : 'Payload que se enviará'} (datos ficticios)
+                            </p>
                             <Button
                                 type="button"
                                 variant="ghost"
@@ -216,31 +260,37 @@ function WebhookTestModal({ open, onClose, webhook }: { open: boolean; onClose: 
                         </div>
                         {showPayload && (
                             <pre className="text-xs text-slate-300 bg-slate-950 border border-white/5 rounded-xl p-4 overflow-auto max-h-64 font-mono">
-                                {JSON.stringify(samplePayload, null, 2)}
+                                {cargando && 'Armando el payload de prueba...'}
+                                {!cargando && previewError}
+                                {!cargando && !previewError && vista && JSON.stringify(vista.payload, null, 2)}
                             </pre>
                         )}
                     </div>
 
-                    {/* Result */}
+                    {/* Resultado */}
                     {result && (
                         <div className={cn(
-                            'p-3 rounded-xl border flex items-center gap-3',
-                            result.ok
-                                ? 'bg-green-500/10 border-green-500/20'
-                                : 'bg-red-500/10 border-red-500/20'
+                            'p-3 rounded-xl border space-y-2',
+                            result.ok ? 'bg-green-500/10 border-green-500/20' : 'bg-red-500/10 border-red-500/20'
                         )}>
-                            {result.ok
-                                ? <CheckCircle className="w-5 h-5 text-green-400 shrink-0" />
-                                : <XCircle className="w-5 h-5 text-red-400 shrink-0" />
-                            }
-                            <div>
-                                <p className={cn('text-sm font-semibold', result.ok ? 'text-green-300' : 'text-red-300')}>
-                                    {result.ok ? 'Conexión exitosa' : 'Error en la conexión'}
-                                </p>
-                                <p className="text-xs text-slate-400">
-                                    Código HTTP: <span className="font-mono font-semibold">{result.status}</span>
-                                </p>
+                            <div className="flex items-center gap-3">
+                                {result.ok
+                                    ? <CheckCircle className="w-5 h-5 text-green-400 shrink-0" />
+                                    : <XCircle className="w-5 h-5 text-red-400 shrink-0" />}
+                                <div>
+                                    <p className={cn('text-sm font-semibold', result.ok ? 'text-green-300' : 'text-red-300')}>
+                                        {result.ok ? 'El webhook aceptó el envío' : 'El webhook no aceptó el envío'}
+                                    </p>
+                                    <p className="text-xs text-slate-400">
+                                        Código HTTP: <span className="font-mono font-semibold">{result.status || 'sin respuesta'}</span>
+                                    </p>
+                                </div>
                             </div>
+                            {result.body && (
+                                <pre className="text-[11px] text-slate-400 bg-slate-950/60 rounded-lg p-2.5 overflow-auto max-h-32 font-mono whitespace-pre-wrap">
+                                    {result.body}
+                                </pre>
+                            )}
                         </div>
                     )}
 
@@ -250,7 +300,7 @@ function WebhookTestModal({ open, onClose, webhook }: { open: boolean; onClose: 
                         </Button>
                         <Button
                             type="button"
-                            disabled={isPending}
+                            disabled={isPending || cargando || !!previewError}
                             onClick={handleSendTest}
                             className="text-white gap-2" style={{ background: "linear-gradient(135deg, #007EC6, #0096E8)", boxShadow: "0 4px 12px rgba(0,126,198,0.25)" }}
                         >
@@ -279,8 +329,9 @@ export function WebhooksView({ webhooks }: WebhooksViewProps) {
         startTransition(async () => {
             try {
                 const result = await testWebhook(id)
-                setTestResult(prev => ({ ...prev, [id]: result as { ok: boolean; status: number } }))
-                toast.success(`Prueba enviada — HTTP ${result.status}`)
+                setTestResult(prev => ({ ...prev, [id]: { ok: result.ok, status: result.status } }))
+                if (result.ok) toast.success(`Prueba enviada — HTTP ${result.status}`)
+                else toast.error(`El webhook respondió HTTP ${result.status || 'nada'}`)
             } catch (e: unknown) {
                 setTestResult(prev => ({ ...prev, [id]: null }))
                 toast.error(e instanceof Error ? e.message : 'Error al probar')
