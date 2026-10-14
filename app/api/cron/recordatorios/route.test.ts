@@ -150,6 +150,9 @@ function enviosA(deudaIds: string[], tipo: string, sentAt: string): Fila[] {
  */
 let fallaRpc = false
 
+/** Veces que se llamó a `actualizar_dias_atraso`, el único RPC que escribe. */
+let actualizacionesDeAtraso = 0
+
 function rpcUltimosEnvios(args: unknown) {
     if (fallaRpc) return { data: null, error: { message: 'RPC caído' } }
     const ids = new Set((args as { p_deuda_ids?: string[] })?.p_deuda_ids ?? [])
@@ -178,7 +181,10 @@ vi.mock('@supabase/supabase-js', () => ({
         get maxRows() { return maxRows },
         rpc: {
             ultimos_envios_por_deuda: rpcUltimosEnvios,
-            actualizar_dias_atraso: () => ({ data: null, error: null }),
+            actualizar_dias_atraso: () => {
+                actualizacionesDeAtraso++
+                return { data: null, error: null }
+            },
         },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any,
@@ -208,6 +214,7 @@ beforeEach(() => {
     db = datos()
     maxRows = 1000
     fallaRpc = false
+    actualizacionesDeAtraso = 0
     // A todas las deudas se les escribió hace 5 días. Hace falta que NO sea
     // el primer envío: el cron se salta a propósito el bloqueo por pago
     // reciente en la primera notificación (para que las deudas sin historial
@@ -402,6 +409,45 @@ describe('GET /api/cron/recordatorios — el mapa anti-duplicado (RPC)', () => {
 
         expect(resp.status).toBe(500)
         expect(espiaFetch).not.toHaveBeenCalled()
+    })
+})
+
+describe('GET /api/cron/recordatorios — dry_run', () => {
+    async function ejecutarEnSeco() {
+        const { GET } = await import('./route')
+        const req = {
+            headers: { get: (k: string) => (k === 'x-cron-secret' ? SECRETO : null) },
+            nextUrl: new URL('http://localhost/api/cron/recordatorios?dry_run=1'),
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (await GET(req as any)).json()
+    }
+
+    it('devuelve a quién escribiría, sin llamar al webhook ni anotar nada', async () => {
+        // Se usa para ver el tamaño de la primera tanda antes de desplegar:
+        // tiene que decidir exactamente igual que la corrida real y no tocar
+        // a ningún cliente.
+        const resultado = await ejecutarEnSeco()
+
+        expect(resultado.dry_run).toBe(true)
+        expect(resultado.planificados.map((p: { deuda_id: string }) => p.deuda_id)).toEqual([DEUDA_MOROSA])
+        expect(resultado.omitidos).toBe(DEUDAS_CHARLATANAS + 1)
+        expect(espiaFetch).not.toHaveBeenCalled()
+        expect(db.envios_log).toEqual([])
+    })
+
+    it('no actualiza días de atraso ni etapas', async () => {
+        await ejecutarEnSeco()
+
+        expect(actualizacionesDeAtraso).toBe(0)
+    })
+
+    it('la corrida normal sí los actualiza', async () => {
+        // Contraparte: el dry_run no puede haberse llevado por delante el
+        // paso que mantiene `etapa` al día en la corrida de verdad.
+        await ejecutarCron()
+
+        expect(actualizacionesDeAtraso).toBe(1)
     })
 })
 

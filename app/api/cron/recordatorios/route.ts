@@ -80,9 +80,15 @@ export async function GET(req: NextRequest) {
         { auth: { autoRefreshToken: false, persistSession: false } }
     )
 
+    // `?dry_run=1`: las mismas lecturas y decisiones que una corrida real,
+    // pero sin escribir nada ni llamar al webhook. Devuelve a quién se le
+    // escribiría. Sirve para medir una tanda antes de que salga — p. ej. la
+    // primera tras semanas con el cron caído.
+    const dryRun = req.nextUrl?.searchParams.get('dry_run') === '1'
+
     try {
         // 1. Actualizar dias_atraso y etapa atómicamente en la DB (fuente de verdad)
-        await supabase.rpc('actualizar_dias_atraso')
+        if (!dryRun) await supabase.rpc('actualizar_dias_atraso')
 
         // 2. Obtener deudas activas — limitar envios_log a los últimos 5 por deuda
         //
@@ -200,6 +206,13 @@ export async function GET(req: NextRequest) {
 
         type TareaEnvio = () => Promise<{ estado: 'enviado' | 'error' }>
         const tareasEnvio: TareaEnvio[] = []
+        const planificados: {
+            deuda_id: string
+            cliente_id: string
+            etapa: EtapaCobranza
+            dias_atraso: number
+            ultimo_envio: string | null
+        }[] = []
 
         for (const deuda of deudas ?? []) {
             const config = normalizarConfiguracionRecordatorio(deuda.configuracion)
@@ -304,7 +317,26 @@ export async function GET(req: NextRequest) {
                 tipo_destino: 'cliente',
                 enviado_por: 'cron',
             }))
+            planificados.push({
+                deuda_id: deuda.id,
+                cliente_id: deuda.cliente_id,
+                etapa: etapaActual,
+                dias_atraso: diasAtraso,
+                ultimo_envio: ultimoEnvioCliente,
+            })
 
+        }
+
+        if (dryRun) {
+            return NextResponse.json({
+                ok: true,
+                dry_run: true,
+                timestamp: new Date().toISOString(),
+                total_deudas: deudas?.length ?? 0,
+                procesadas,
+                omitidos,
+                planificados,
+            })
         }
 
         // Ejecutar en lotes
