@@ -55,7 +55,29 @@
  * calcula explícitamente comparando fechas al llenar el mapa. Es más robusto
  * que antes, porque tampoco dependía de que PostgREST desempatara dos pagos
  * con el mismo `created_at` de una forma concreta.
+ *
+ * ── POR QUÉ SE TROCEA `deudaIds` ──────────────────────────────
+ *
+ * El `.in('deuda_id', deudaIds)` viaja en la URL del GET, y la URL tiene
+ * tope. Medido contra producción (2026-10-14) con UUIDs de deuda: hasta 393
+ * responde; desde 394 Node aborta por cabeceras demasiado grandes, y desde
+ * 644 Cloudflare devuelve `400 Bad Request`. Con las deudas activas de hoy,
+ * esta lectura fallaba en cada corrida y el cron de recordatorios no envió
+ * nada del 2026-08-06 al 2026-10-14.
+ *
+ * El código anterior a la paginación hacía la misma consulta y ya fallaba,
+ * pero descartaba el `error`: el mapa salía vacío y el filtro de «ya pagó
+ * este período» no se aplicaba a nadie.
+ *
+ * Cada bloque pasa por `leerTodasLasFilas` con su propio conteo exacto, así
+ * que la comprobación de completitud se conserva bloque a bloque.
  */
+
+/**
+ * Deudas por petición. Muy por debajo del tope medido (393): un UUID ocupa
+ * ~39 caracteres en la URL, así que 150 son unos 6 KB.
+ */
+export const DEUDAS_POR_BLOQUE = 150
 
 import {
     leerTodasLasFilas, encadenable, comoLote, comoConteo,
@@ -106,27 +128,32 @@ export async function leerUltimoPagoPorDeuda(
     const mapa = new Map<string, string>()
     if (deudaIds.length === 0) return mapa
 
-    // Los mismos filtros para el lote y para el conteo de control, escritos
-    // una sola vez: si no fueran idénticos, la comprobación de completitud
-    // de `leerTodasLasFilas` no comprobaría nada.
-    const filtrar = (consulta: ConsultaEncadenable) =>
-        consulta.in('deuda_id', deudaIds)
+    const pagos: FilaPago[] = []
+    for (let i = 0; i < deudaIds.length; i += DEUDAS_POR_BLOQUE) {
+        const bloque = deudaIds.slice(i, i + DEUDAS_POR_BLOQUE)
 
-    const pagos = await leerTodasLasFilas<FilaPago>({
-        etiqueta: 'los pagos de las deudas consultadas',
-        clave: 'id',
-        lote: (cursor, limite) => {
-            const base = filtrar(
-                encadenable(cliente.from('pagos').select('id, deuda_id, created_at')),
-            )
-            return comoLote<FilaPago>(
-                (cursor ? base.gt('id', cursor) : base).order('id').limit(limite),
-            )
-        },
-        contar: () => comoConteo(filtrar(
-            encadenable(cliente.from('pagos').select('id', { count: 'exact', head: true })),
-        )),
-    })
+        // Los mismos filtros para el lote y para el conteo de control,
+        // escritos una sola vez: si no fueran idénticos, la comprobación de
+        // completitud de `leerTodasLasFilas` no comprobaría nada.
+        const filtrar = (consulta: ConsultaEncadenable) =>
+            consulta.in('deuda_id', bloque)
+
+        pagos.push(...await leerTodasLasFilas<FilaPago>({
+            etiqueta: 'los pagos de las deudas consultadas',
+            clave: 'id',
+            lote: (cursor, limite) => {
+                const base = filtrar(
+                    encadenable(cliente.from('pagos').select('id, deuda_id, created_at')),
+                )
+                return comoLote<FilaPago>(
+                    (cursor ? base.gt('id', cursor) : base).order('id').limit(limite),
+                )
+            },
+            contar: () => comoConteo(filtrar(
+                encadenable(cliente.from('pagos').select('id', { count: 'exact', head: true })),
+            )),
+        }))
+    }
 
     const masReciente = new Map<string, number>()
     for (const pago of pagos) {

@@ -106,6 +106,25 @@ describe('leerUltimoPagoPorDeuda', () => {
         expect(mapa.size).toBe(0)
     })
 
+    it('lee los pagos de 800 deudas aunque no quepan en un solo `.in()` de la URL', async () => {
+        // Producción el 2026-10-14: todas las deudas activas en un único
+        // `deuda_id=in.(...)` → 31 KB de URL → `400 Bad Request` de
+        // Cloudflare, y el cron sin enviar nada desde el 2026-08-06. El
+        // doble rechaza, como el servidor, cualquier `.in()` de más de
+        // MAX_VALORES_IN valores.
+        const deudas = Array.from({ length: 800 }, (_, i) => `d-${String(i).padStart(4, '0')}`)
+        const filas = deudas.map((deuda_id, i) => ({
+            id: `p-${String(i).padStart(6, '0')}`,
+            deuda_id,
+            created_at: iso(1 + (i % 28)),
+        }))
+
+        const mapa = await leerUltimoPagoPorDeuda(cliente({ pagos: filas }), deudas)
+
+        expect(mapa.size).toBe(800)
+        expect(mapa.get('d-0799')).toBe(iso(1 + (799 % 28)))
+    })
+
     it('ABORTA si el servidor recorta por debajo del tamaño de lote', async () => {
         // La defensa que de verdad cierra el agujero: si `max-rows` cayera
         // por debajo del lote, el primer lote llegaría corto y un bucle

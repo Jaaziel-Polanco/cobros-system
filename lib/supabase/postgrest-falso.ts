@@ -34,9 +34,26 @@
  * reproducir las dos mitades: el recorte y las herramientas para detectarlo.
  * Un manejador que devuelva un array pasa por `ConsultaFalsa`; uno que
  * devuelva cualquier otra cosa (un escalar, `null`) se entrega tal cual.
+ *
+ * ── `.in()` VIAJA EN LA URL, Y LA URL TIENE TOPE ──────────────
+ *
+ * Un `select` es un GET: `.in('deuda_id', ids)` mete cada UUID en la query
+ * string. Medido contra producción (2026-10-14) con UUIDs de `deudas`:
+ * hasta 393 valores responde bien; de 394 a 643 Node aborta con
+ * `UND_ERR_HEADERS_OVERFLOW` (la respuesta trae la URL de vuelta en una
+ * cabecera); desde 644, Cloudflare devuelve `400 Bad Request`. Eso dejó el
+ * cron de recordatorios sin enviar nada desde el 2026-08-06, mientras esta
+ * suite —que ya probaba con 1200 deudas— seguía en verde porque el doble
+ * aceptaba listas de cualquier tamaño.
+ *
+ * Aquí se modela por número de valores, no por bytes: los ids de las
+ * pruebas son cortos y un tope por longitud no saltaría nunca.
  */
 
 export const MAX_ROWS = 1000
+
+/** Valores que admite un `.in()` antes de que la petición falle (ver arriba). */
+export const MAX_VALORES_IN = 393
 
 export type Fila = Record<string, unknown>
 
@@ -49,12 +66,14 @@ export class ConsultaFalsa {
     private filtros: ((f: Fila) => boolean)[] = []
     private orden: { col: string; asc: boolean } | null = null
     private limite: number | null = null
+    private urlDemasiadoLarga = false
 
     constructor(
         private filas: Fila[],
         private readonly head: boolean,
         private readonly quiereConteo: boolean,
         private readonly maxRows: number,
+        private readonly maxValoresIn: number = MAX_VALORES_IN,
     ) { }
 
     eq(c: string, v: unknown) { this.filtros.push(f => f[c] === v); return this }
@@ -65,6 +84,7 @@ export class ConsultaFalsa {
     is(c: string, v: unknown) { this.filtros.push(f => f[c] === v); return this }
 
     in(c: string, valores: readonly unknown[]) {
+        if (valores.length > this.maxValoresIn) this.urlDemasiadoLarga = true
         const conjunto = new Set(valores)
         this.filtros.push(f => conjunto.has(f[c]))
         return this
@@ -78,6 +98,11 @@ export class ConsultaFalsa {
     limit(n: number) { this.limite = n; return this }
 
     private resolver() {
+        // Lo que ve supabase-js cuando Cloudflare corta: sin cuerpo JSON,
+        // `error.message` es el `statusText`.
+        if (this.urlDemasiadoLarga) {
+            return { data: null, error: { message: 'Bad Request' }, count: null }
+        }
         let filas = this.filas.filter(f => this.filtros.every(p => p(f)))
         if (this.orden) {
             const { col, asc } = this.orden
@@ -161,6 +186,8 @@ class ConsultaFallida {
 
 export interface OpcionesBaseFalsa {
     maxRows?: number
+    /** Tope de valores de un `.in()`; por defecto, el medido en producción. */
+    maxValoresIn?: number
     /** Respuestas de `rpc(nombre, args)`, por nombre. */
     rpc?: Record<string, (args: unknown) => { data: unknown; error: { message: string } | null }>
 }
@@ -188,6 +215,7 @@ export function crearBaseFalsa(
                         opciones?.head === true,
                         Boolean(opciones?.count),
                         maxRows,
+                        opcionesBase.maxValoresIn,
                     )
                 },
                 insert(valores: Fila | Fila[]) {
