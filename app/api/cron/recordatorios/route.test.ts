@@ -61,6 +61,14 @@ const haceDias = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).t
 // haya pagado hace mucho, es que hay demasiados pagos ajenos por delante.
 const DIAS_DEL_PAGO_INVISIBLE = 20
 
+/**
+ * Un teléfono distinto por deuda. Antes todas compartían el mismo número, y
+ * desde que el cron no repite teléfono en una corrida eso convertiría a toda
+ * la cartera de prueba en una sola persona.
+ */
+let siguienteTelefono = 0
+const telefonoUnico = () => `809${String(1000000 + siguienteTelefono++)}`
+
 function deudaBase(id: string): Fila {
     return {
         id,
@@ -76,7 +84,7 @@ function deudaBase(id: string): Fila {
         tasa_interes: 5,
         fecha_corte: '2026-07-01',
         frecuencia_pago: 'mensual',
-        cliente: { id: `c-${id}`, nombre: 'ZZTEST', apellido: id, telefono: '8090000000', email: null },
+        cliente: { id: `c-${id}`, nombre: 'ZZTEST', apellido: id, telefono: telefonoUnico(), email: null },
         agente: null,
         configuracion: null,
     }
@@ -408,6 +416,104 @@ describe('GET /api/cron/recordatorios — el mapa anti-duplicado (RPC)', () => {
         const resp = await GET(req as any)
 
         expect(resp.status).toBe(500)
+        expect(espiaFetch).not.toHaveBeenCalled()
+    })
+})
+
+describe('GET /api/cron/recordatorios — el cliente es el teléfono', () => {
+    const HACE_2H = new Date(Date.now() - 2 * 36e5).toISOString()
+
+    function deuda(id: string, etapa: string, diasAtraso: number, telefono: string, extra: Fila = {}): Fila {
+        const base = deudaBase(id)
+        return {
+            ...base,
+            etapa,
+            dias_atraso: diasAtraso,
+            cliente: { ...(base.cliente as Fila), telefono },
+            ...extra,
+        }
+    }
+
+    /**
+     * - d-a y d-b: dos CLIENTES distintos con el mismo número, escrito de dos
+     *   formas. Es la forma de los registros duplicados de producción.
+     * - d-c: un cliente normal, que tiene que seguir recibiendo su aviso.
+     * - d-d: su número recibió hace 2 h un mensaje MANUAL por otra deuda de
+     *   otro cliente.
+     * - d-e: `fecha_corte` con el año mal tecleado (0026).
+     */
+    function escenario() {
+        db = {
+            deudas: [
+                deuda('d-a', 'mora_temprana', 10, '809-555-0001'),
+                deuda('d-b', 'recuperacion', 60, '+1 809 555 0001'),
+                deuda('d-c', 'mora_temprana', 10, '8095550002'),
+                deuda('d-d', 'mora_temprana', 10, '8095550003'),
+                deuda('d-e', 'recuperacion', 730742, '8095550004', { fecha_corte: '0026-01-30' }),
+            ],
+            pagos: [],
+            plantillas_mensaje: [
+                { id: 'pl-1', etapa: 'mora_temprana', activo: true, contenido: 'Hola {{nombre}}.' },
+                { id: 'pl-2', etapa: 'recuperacion', activo: true, contenido: 'Sr. {{nombre}}, {{dias_atraso}} días.' },
+            ],
+            webhooks: db.webhooks,
+            envios_log: [{
+                id: 'e-manual', deuda_id: 'd-otra', cliente_id: 'c-otra', tipo_destino: 'cliente',
+                enviado_por: 'manual', estado: 'enviado', sent_at: HACE_2H,
+                cliente: { telefono: '809 555 0003' },
+            }],
+        }
+        enviosPrevios = enviosA(db.deudas.map(d => String(d.id)), 'cliente', haceDias(5))
+    }
+
+    it('escribe una sola vez a un teléfono con dos deudas, por la más urgente', async () => {
+        escenario()
+        await ejecutarCron()
+
+        const llamadas = deudasLlamadasAlWebhook()
+        expect(llamadas).toContain('d-b')
+        expect(llamadas).not.toContain('d-a')
+    })
+
+    it('no escribe a un número que recibió un mensaje manual por otra deuda dentro del intervalo', async () => {
+        escenario()
+        await ejecutarCron()
+
+        expect(deudasLlamadasAlWebhook()).not.toContain('d-d')
+    })
+
+    it('omite la deuda con fecha de corte imposible', async () => {
+        escenario()
+        await ejecutarCron()
+
+        expect(deudasLlamadasAlWebhook()).not.toContain('d-e')
+    })
+
+    it('sigue escribiendo a los demás', async () => {
+        escenario()
+        const resultado = await ejecutarCron()
+
+        expect(deudasLlamadasAlWebhook().sort()).toEqual(['d-b', 'd-c'])
+        expect(resultado.enviados).toBe(2)
+        expect(resultado.omitidos).toBe(3)
+    })
+
+    it('el dry_run dice por qué se omitió cada una', async () => {
+        escenario()
+        const { GET } = await import('./route')
+        const req = {
+            headers: { get: (k: string) => (k === 'x-cron-secret' ? SECRETO : null) },
+            nextUrl: new URL('http://localhost/api/cron/recordatorios?dry_run=1'),
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const r = await (await GET(req as any)).json()
+
+        expect(r.motivos).toMatchObject({
+            mismo_telefono_en_corrida: 1,
+            intervalo_telefono: 1,
+            datos_invalidos: 1,
+        })
+        expect(r.datos_invalidos).toEqual(['d-e'])
         expect(espiaFetch).not.toHaveBeenCalled()
     })
 })

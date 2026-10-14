@@ -6,6 +6,9 @@ import {
     getIntervaloEnvio,
     debeEnviarPreventivo,
     normalizarConfiguracionRecordatorio,
+    normalizarTelefono,
+    fechaCorteValida,
+    URGENCIA_ETAPA,
 } from '@/lib/utils/cobranza-engine'
 import { WebhookPayload, EtapaCobranza, FrecuenciaPago } from '@/lib/types'
 import { verificarCronSecret } from '@/lib/utils/auth'
@@ -15,6 +18,7 @@ import {
 } from '@/lib/supabase/paginacion'
 import { leerUltimoPagoPorDeuda } from '@/lib/supabase/ultimo-pago'
 import { leerUltimoEnvioPorDeuda } from '@/lib/supabase/ultimo-envio'
+import { leerUltimoEnvioPorTelefono } from '@/lib/supabase/ultimo-envio-telefono'
 
 const BATCH_SIZE = 25
 const WEBHOOK_TIMEOUT_MS = 15_000
@@ -201,20 +205,52 @@ export async function GET(req: NextRequest) {
             return NextResponse.json({ ok: false, message: 'No hay webhook activo' })
         }
 
-        let procesadas = 0
-        let omitidos = 0
+        // 5. Lo que le llegó a cada TELÉFONO en la ventana del intervalo más
+        // largo configurado (el formulario lo topa en 168 h). El anti-duplicado
+        // por deuda no basta: el WhatsApp llega a un número, varias deudas (y
+        // clientes duplicados) comparten número, y las plantillas no dicen de
+        // qué deuda hablan. Ver lib/supabase/ultimo-envio-telefono.ts.
+        const ventanaHoras = Math.max(24, ...deudas.map(d => {
+            const c = normalizarConfiguracionRecordatorio(d.configuracion)
+            return Math.max(c.frecuencia_mora_h, c.frecuencia_recuperacion_h)
+        }))
+        const ultimoEnvioPorTelefono = await leerUltimoEnvioPorTelefono(
+            supabase, new Date(Date.now() - ventanaHoras * 3_600_000).toISOString(),
+        )
 
-        type TareaEnvio = () => Promise<{ estado: 'enviado' | 'error' }>
-        const tareasEnvio: TareaEnvio[] = []
-        const planificados: {
-            deuda_id: string
-            cliente_id: string
+        // Por qué se omitió cada deuda. Sale en la respuesta (y en el dry_run)
+        // para que una tanda rara se pueda explicar sin leer código.
+        const motivos = {
+            datos_invalidos: 0,
+            pago_reciente: 0,
+            fuera_de_ventana_preventivo: 0,
+            intervalo_deuda: 0,
+            intervalo_telefono: 0,
+            sin_plantilla: 0,
+            mismo_telefono_en_corrida: 0,
+        }
+        const datosInvalidos: string[] = []
+
+        type Plantilla = { id: string; etapa: string; contenido: string }
+        interface Candidata {
+            deuda: FilaDeuda
             etapa: EtapaCobranza
-            dias_atraso: number
-            ultimo_envio: string | null
-        }[] = []
+            diasAtraso: number
+            plantilla: Plantilla
+            ultimoEnvio: string | null
+            telefono: string | null
+        }
+        const candidatas: Candidata[] = []
 
         for (const deuda of deudas ?? []) {
+            // Una fecha de corte imposible (p. ej. año 0026) da cientos de
+            // miles de días de atraso, y la plantilla se los dice al cliente.
+            if (!fechaCorteValida(deuda.fecha_corte)) {
+                motivos.datos_invalidos++
+                datosInvalidos.push(deuda.id)
+                continue
+            }
+
             const config = normalizarConfiguracionRecordatorio(deuda.configuracion)
 
             // Usar etapa y dias_atraso de la DB (ya actualizados por el RPC) — evita inconsistencia de timezone
@@ -234,7 +270,7 @@ export async function GET(req: NextRequest) {
                 const freq = (deuda.frecuencia_pago as FrecuenciaPago) ?? 'mensual'
                 const umbral = freq === 'semanal' ? 5 : freq === 'quincenal' ? 12 : 25
                 if (diasDesdePago < umbral) {
-                    omitidos++
+                    motivos.pago_reciente++
                     continue
                 }
             }
@@ -244,24 +280,74 @@ export async function GET(req: NextRequest) {
             // se enviarían recordatorios preventivos semanas antes del corte (bug visto en producción).
             if (etapaActual === 'preventivo') {
                 if (!debeEnviarPreventivo(deuda.fecha_corte, config.dias_antes_vencimiento)) {
-                    omitidos++
+                    motivos.fuera_de_ventana_preventivo++
                     continue
                 }
             }
 
-            // Anti-duplicado para envío al cliente
+            // Anti-duplicado para envío al cliente: por deuda...
             const intervalo = getIntervaloEnvio(etapaActual, config)
 
             if (!debeEnviar(ultimoEnvioCliente, intervalo)) {
-                omitidos++
+                motivos.intervalo_deuda++
+                continue
+            }
+
+            // ...y por teléfono: cualquier mensaje a ese número (manual o del
+            // cron, por esta deuda o por otra) dentro del mismo intervalo.
+            const telefono = normalizarTelefono(deuda.cliente?.telefono)
+            const ultimoAlTelefono = telefono ? ultimoEnvioPorTelefono.get(telefono) ?? null : null
+            if (!debeEnviar(ultimoAlTelefono, intervalo)) {
+                motivos.intervalo_telefono++
                 continue
             }
 
             const plantilla = plantillas?.find(p => p.etapa === etapaActual)
-            if (!plantilla) { omitidos++; continue }
+            if (!plantilla) { motivos.sin_plantilla++; continue }
 
-            procesadas++
+            candidatas.push({
+                deuda, etapa: etapaActual, diasAtraso, plantilla, ultimoEnvio: ultimoEnvioCliente, telefono,
+            })
+        }
 
+        // Un solo mensaje por teléfono en cada corrida: el de la deuda más
+        // urgente (etapa, y a igual etapa más días de atraso). Las demás
+        // quedan cubiertas en las corridas siguientes por el intervalo del
+        // teléfono.
+        const masUrgente = (a: Candidata, b: Candidata) =>
+            (URGENCIA_ETAPA[a.etapa] - URGENCIA_ETAPA[b.etapa]) || (a.diasAtraso - b.diasAtraso)
+        const porTelefono = new Map<string, Candidata>()
+        const elegidas: Candidata[] = []
+        for (const c of candidatas) {
+            if (!c.telefono) { elegidas.push(c); continue }
+            const actual = porTelefono.get(c.telefono)
+            if (actual) {
+                motivos.mismo_telefono_en_corrida++
+                if (masUrgente(c, actual) <= 0) continue
+            }
+            porTelefono.set(c.telefono, c)
+        }
+        elegidas.push(...porTelefono.values())
+        elegidas.sort((a, b) => (a.deuda.id < b.deuda.id ? -1 : a.deuda.id > b.deuda.id ? 1 : 0))
+
+        if (datosInvalidos.length > 0) {
+            console.warn(`[CRON] ${datosInvalidos.length} deuda(s) omitidas por fecha_corte inválida: ${datosInvalidos.join(', ')}`)
+        }
+
+        const procesadas = elegidas.length
+        const omitidos = (deudas?.length ?? 0) - procesadas
+
+        type TareaEnvio = () => Promise<{ estado: 'enviado' | 'error' }>
+        const tareasEnvio: TareaEnvio[] = []
+        const planificados: {
+            deuda_id: string
+            cliente_id: string
+            etapa: EtapaCobranza
+            dias_atraso: number
+            ultimo_envio: string | null
+        }[] = []
+
+        for (const { deuda, etapa: etapaActual, diasAtraso, plantilla, ultimoEnvio: ultimoEnvioCliente } of elegidas) {
             const cuotaDisplay = deuda.cuota_mensual
                 ? formatMonto(deuda.cuota_mensual)
                 : formatMonto(deuda.saldo_pendiente)
@@ -335,6 +421,8 @@ export async function GET(req: NextRequest) {
                 total_deudas: deudas?.length ?? 0,
                 procesadas,
                 omitidos,
+                motivos,
+                datos_invalidos: datosInvalidos,
                 planificados,
             })
         }
@@ -364,6 +452,7 @@ export async function GET(req: NextRequest) {
             enviados,
             omitidos,
             errores,
+            motivos,
         })
     } catch (error) {
         console.error('[CRON] Error:', error)

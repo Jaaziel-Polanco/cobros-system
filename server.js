@@ -94,6 +94,9 @@ async function dispararRecordatorios() {
       console.log(
         `[CRON] ✅ Completado — Total: ${data.total_deudas} | Procesadas: ${data.procesadas} | Enviadas: ${data.enviados} | Omitidas: ${data.omitidos} | Errores: ${data.errores}`,
       );
+      if (data.motivos) {
+        console.log(`[CRON]    Motivos de omisión: ${JSON.stringify(data.motivos)}`);
+      }
     } else {
       console.error(`[CRON] ⚠️  Respuesta con error: ${JSON.stringify(data)}`);
     }

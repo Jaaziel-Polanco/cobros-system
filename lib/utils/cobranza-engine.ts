@@ -38,6 +38,49 @@ export function getIntervaloEnvio(
 }
 
 /**
+ * Orden de urgencia de las etapas: cuando a un mismo teléfono le tocan varias
+ * deudas en una corrida, se le escribe sólo por la más urgente.
+ */
+export const URGENCIA_ETAPA: Record<EtapaCobranza, number> = {
+    saldado: 0,
+    preventivo: 1,
+    mora_temprana: 2,
+    mora_alta: 3,
+    recuperacion: 4,
+}
+
+/**
+ * Clave para reconocer el mismo teléfono escrito de formas distintas.
+ *
+ * En producción un mismo número aparece en clientes distintos (registros
+ * duplicados) y con formatos distintos; el anti-duplicado por teléfono sólo
+ * funciona si todos caen en la misma clave. Se quedan los dígitos y se quita
+ * el prefijo de país `1` de los números de 11 cifras (+1 809/829/849…).
+ * Devuelve `null` si no queda un número usable.
+ */
+export function normalizarTelefono(telefono: string | null | undefined): string | null {
+    const digitos = (telefono ?? '').replace(/\D/g, '')
+    const sinPais = digitos.length === 11 && digitos.startsWith('1') ? digitos.slice(1) : digitos
+    return sinPais.length >= 7 ? sinPais : null
+}
+
+/**
+ * `fecha_corte` utilizable: una fecha real (AAAA-MM-DD) entre 2000 y 2100.
+ *
+ * En producción hay deudas con el año tecleado como `0026`: el motor les
+ * calcula 730 000 días de atraso y la plantilla se los dice al cliente.
+ */
+export function fechaCorteValida(fecha: unknown): boolean {
+    if (typeof fecha !== 'string') return false
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(fecha)
+    if (!m) return false
+    const [anio, mes, dia] = [Number(m[1]), Number(m[2]), Number(m[3])]
+    if (anio < 2000 || anio > 2100) return false
+    const d = new Date(Date.UTC(anio, mes - 1, dia))
+    return d.getUTCFullYear() === anio && d.getUTCMonth() === mes - 1 && d.getUTCDate() === dia
+}
+
+/**
  * Calcula los días de atraso desde la fecha de corte.
  */
 export function calcularDiasAtraso(fechaCorte: string): number {

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { fechaCorteValida } from '@/lib/utils/cobranza-engine'
 
 // ─── CLIENTES ────────────────────────────────────────────────
 
@@ -27,7 +28,8 @@ export const DeudaSchema = z.object({
     tasa_interes: z.coerce.number().min(0).max(100, 'La tasa no puede superar 100%').optional(),
     frecuencia_pago: z.enum(['mensual', 'quincenal', 'semanal']),
     dia_corte_2: z.coerce.number().int().min(1).max(31).optional(),
-    fecha_corte: z.string().min(1, 'La fecha de corte es requerida'),
+    fecha_corte: z.string().min(1, 'La fecha de corte es requerida')
+        .refine(fechaCorteValida, 'Fecha de corte inválida: revisa el año'),
     es_deuda_existente: z.boolean(),
     fecha_deuda_origen: z.string().optional().or(z.literal('')),
     agente_id: z.string().uuid().optional().or(z.literal('')),
