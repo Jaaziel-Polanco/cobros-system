@@ -15,13 +15,21 @@ export interface EstacionAutenticada {
     sucursal_nombre: string
 }
 
-/** Cliente con service-role. Solo vive en el servidor, nunca se expone. */
+let admin: ReturnType<typeof createClient> | null = null
+
+/**
+ * Cliente con service-role. Solo vive en el servidor, nunca se expone.
+ *
+ * Uno por proceso: no guarda sesión, así que compartirlo es seguro, y el
+ * long-poll de cada agente lo pedía tres veces por petición, día y noche.
+ */
 export function clienteAdmin() {
-    return createClient(
+    admin ??= createClient(
         process.env.NEXT_PUBLIC_SUPABASE_URL!,
         process.env.SUPABASE_SERVICE_ROLE_KEY!,
         { auth: { autoRefreshToken: false, persistSession: false } },
     )
+    return admin
 }
 
 /**

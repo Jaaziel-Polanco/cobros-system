@@ -3,13 +3,20 @@ import {
     autenticarEstacion, extraerToken, registrarLatido, clienteAdmin,
     type EstacionAutenticada,
 } from '@/lib/api-print/auth'
+import { avisarTrabajosNuevos, esperarTrabajos } from '@/lib/api-print/avisos'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
 
 const ESPERA_MAX_MS = 25_000
-const INTERVALO_MS = 1_500
+/**
+ * Entre RPC y RPC el poll duerme hasta que alguien encola un trabajo
+ * (`avisarTrabajosNuevos`) o, como mucho, este respaldo. Antes preguntaba
+ * cada 1,5 s: ~17 RPC por petición de 25 s, casi todas para oír «nada».
+ * Ver lib/api-print/avisos.ts.
+ */
+const RESPALDO_MS = 10_000
 
 /**
  * Destino de impresión completo, leído de fresco en CADA vuelta del poll
@@ -37,25 +44,6 @@ function destinoActual(estacion: EstacionAutenticada) {
         // miente justo cuando hace falta que no mienta.
         ancho_cols: estacion.ancho_cols,
     }
-}
-
-/** Espera `ms`, pero se corta antes si `signal` se aborta (cliente desconectado). */
-function dormir(ms: number, signal: AbortSignal) {
-    return new Promise<void>(resolve => {
-        if (signal.aborted) {
-            resolve()
-            return
-        }
-        const timer = setTimeout(() => {
-            signal.removeEventListener('abort', onAbort)
-            resolve()
-        }, ms)
-        function onAbort() {
-            clearTimeout(timer)
-            resolve()
-        }
-        signal.addEventListener('abort', onAbort, { once: true })
-    })
 }
 
 /**
@@ -122,6 +110,7 @@ export async function POST(req: Request) {
                     .update({ estado: 'pendiente', estacion_id: null, claimed_at: null })
                     .in('id', data.map((j: { id: string }) => j.id))
                     .eq('estado', 'reclamado')
+                avisarTrabajosNuevos()
                 return new Response(null, { status: 204 })
             }
 
@@ -141,6 +130,7 @@ export async function POST(req: Request) {
             return NextResponse.json({ jobs: [], impresora: destinoActual(estacion) })
         }
 
-        await dormir(INTERVALO_MS, req.signal)
+        const restante = esperaMax - (Date.now() - inicio)
+        await esperarTrabajos(Math.min(RESPALDO_MS, restante), req.signal)
     }
 }

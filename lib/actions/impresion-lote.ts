@@ -3,6 +3,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createAdminClient } from '@supabase/supabase-js'
 import { revalidatePath } from 'next/cache'
+import { avisarTrabajosNuevos } from '@/lib/api-print/avisos'
 import { getPermisos } from '@/lib/utils/permisos'
 import { construirTirillaTicket } from '@/lib/escpos/tirilla-ticket'
 import {
@@ -366,6 +367,7 @@ export async function imprimirLoteDeSorteo(
         }
     }
 
+    if (resultado.encolados > 0) avisarTrabajosNuevos()
     revalidatePath(`/sorteos/${sorteoId}`)
     revalidatePath('/estaciones')
     revalidatePath('/tickets')

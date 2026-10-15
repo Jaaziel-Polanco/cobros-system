@@ -3,6 +3,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createAdminClient } from '@supabase/supabase-js'
 import { revalidatePath } from 'next/cache'
+import { avisarTrabajosNuevos } from '@/lib/api-print/avisos'
 import { getPermisos } from '@/lib/utils/permisos'
 import { construirTirillaTicket } from '@/lib/escpos/tirilla-ticket'
 import { aBytes, selectorCodepage } from '@/lib/escpos/codificacion'
@@ -218,6 +219,7 @@ export async function imprimirTicket(
         throw new Error(error.message)
     }
 
+    avisarTrabajosNuevos()
     revalidatePath(`/clientes/${ticket.cliente_id}`)
     revalidatePath('/tickets')
 
@@ -314,6 +316,7 @@ export async function imprimirPaginaDePrueba(
 
     if (error) throw new Error(error.message)
 
+    avisarTrabajosNuevos()
     revalidatePath('/estaciones')
     return { jobId: job.id }
 }
@@ -512,6 +515,7 @@ export async function reencolarTrabajoImpresion(jobId: string): Promise<{ jobId:
         throw new Error(error.message)
     }
 
+    avisarTrabajosNuevos()
     revalidatePath('/estaciones')
     const clienteId = clienteIdDe(job as unknown as { tickets?: { cliente_id: string } | null })
     if (clienteId) revalidatePath(`/clientes/${clienteId}`)
