@@ -90,6 +90,11 @@ export async function GET(req: NextRequest) {
     // primera tras semanas con el cron caído.
     const dryRun = req.nextUrl?.searchParams.get('dry_run') === '1'
 
+    // `?simulacion=1`: sólo las deudas de los clientes que crea /simulador.
+    // El simulador disparaba el cron completo, así que probar una deuda DEMO
+    // mandaba WhatsApp a toda la cartera (y se saltaba una pausa del cron).
+    const soloSimulacion = req.nextUrl?.searchParams.get('simulacion') === '1'
+
     try {
         // 1. Actualizar dias_atraso y etapa atómicamente en la DB (fuente de verdad)
         if (!dryRun) await supabase.rpc('actualizar_dias_atraso')
@@ -117,7 +122,7 @@ export async function GET(req: NextRequest) {
                 .eq('pausado', false)
                 .neq('etapa', 'saldado')
 
-        const deudas = await leerTodasLasFilas<FilaDeuda>({
+        const todasLasDeudas = await leerTodasLasFilas<FilaDeuda>({
             etiqueta: 'las deudas activas del cron de recordatorios',
             clave: 'id',
             lote: (cursor, limite) => {
@@ -137,6 +142,9 @@ export async function GET(req: NextRequest) {
                 encadenable(supabase.from('deudas').select('id', { count: 'exact', head: true })),
             )),
         })
+        const deudas = soloSimulacion
+            ? todasLasDeudas.filter(d => d.cliente?.notas === '__SIMULACION__')
+            : todasLasDeudas
 
         // Último envío por deuda (por tipo_destino) — vía RPC con DISTINCT ON.
         // ANTES: .limit(deudaIds.length * 5) era un límite GLOBAL, no por grupo, así que

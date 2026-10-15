@@ -518,6 +518,28 @@ describe('GET /api/cron/recordatorios — el cliente es el teléfono', () => {
     })
 })
 
+describe('GET /api/cron/recordatorios — simulacion=1', () => {
+    it('sólo escribe a los clientes de simulación, nunca a la cartera real', async () => {
+        // El simulador disparaba el cron completo: probar una deuda DEMO
+        // mandaba WhatsApp a toda la cartera, saltándose incluso una pausa
+        // del cron programado.
+        const demo = deudaBase('d-demo')
+        demo.cliente = { ...(demo.cliente as Fila), notas: '__SIMULACION__' }
+        db.deudas.push(demo)
+
+        const { GET } = await import('./route')
+        const req = {
+            headers: { get: (k: string) => (k === 'x-cron-secret' ? SECRETO : null) },
+            nextUrl: new URL('http://localhost/api/cron/recordatorios?simulacion=1'),
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const r = await (await GET(req as any)).json()
+
+        expect(deudasLlamadasAlWebhook()).toEqual(['d-demo'])
+        expect(r.total_deudas).toBe(1)
+    })
+})
+
 describe('GET /api/cron/recordatorios — dry_run', () => {
     async function ejecutarEnSeco() {
         const { GET } = await import('./route')

@@ -155,10 +155,12 @@ export default function SimuladorPage() {
         const s = secret ?? cronSecret
         clearTimer()
         setPhase('disparando')
-        addLog('cron', '🚀 Disparando cron /api/cron/recordatorios...')
+        addLog('cron', '🚀 Disparando cron sobre las deudas de simulación...')
 
         try {
-            const res = await fetch('/api/cron/recordatorios', {
+            // Sólo las deudas DEMO: sin `simulacion=1` el cron recorre toda la
+            // cartera y manda WhatsApp reales a los clientes.
+            const res = await fetch('/api/cron/recordatorios?simulacion=1', {
                 headers: { 'x-cron-secret': s },
             })
             const data: CronResult = await res.json()

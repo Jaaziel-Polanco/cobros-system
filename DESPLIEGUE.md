@@ -168,17 +168,28 @@ en la próxima corrida programada**. Medido en producción:
 
 Si el servidor estuvo caído durante un horario programado, la siguiente
 corrida (pocas horas después) recoge todo igual; y si necesitas la pasada ya
-mismo, dispárala a mano desde `/simulador` → "Disparar Cron ahora". Ninguno de
-los dos casos justifica que un deploy pueda escribirle a un cliente a
-cualquier hora.
+mismo, dispárala a mano (ver abajo). Ninguno de los dos casos justifica que
+un deploy pueda escribirle a un cliente a cualquier hora.
 
 ---
 
 ## Disparar el Cron Manualmente
 
-**Desde el navegador:** Ve a `/simulador` → "Disparar Cron ahora"
+**Mide antes de enviar.** `?dry_run=1` hace las mismas lecturas y decisiones
+que una corrida real pero no envía ni escribe nada: devuelve a quién se le
+escribiría y, en `motivos`, por qué se omitió cada deuda.
 
-**Desde terminal:**
+```bash
+curl "http://localhost:3000/api/cron/recordatorios?dry_run=1" \
+  -H "x-cron-secret: TU_CRON_SECRET"
+```
+
+> `/simulador` → "Disparar Cron ahora" **ya no** sirve para esto: desde
+> octubre de 2026 sólo procesa las deudas DEMO que crea el propio simulador
+> (`?simulacion=1`). Antes recorría toda la cartera y mandaba WhatsApp reales
+> a los clientes.
+
+**Desde terminal (corrida real):**
 
 ```bash
 npm run cron:test

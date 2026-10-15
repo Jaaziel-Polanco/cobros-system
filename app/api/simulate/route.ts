@@ -128,19 +128,19 @@ export async function DELETE(req: NextRequest) {
         { auth: { autoRefreshToken: false, persistSession: false } }
     )
 
-    // Fetch IDs first, then delete
-    const { data: toDelete } = await supabase
+    // Borrado por la marca, no por lista de ids: un `.in('id', [...])` va en
+    // la URL y con unos cientos de clientes de simulación acumulados la
+    // petición falla (Cloudflare responde 400 pasados ~400 UUIDs).
+    const { data: eliminados, error } = await supabase
         .from('clientes')
-        .select('id')
+        .delete()
         .eq('notas', '__SIMULACION__')
+        .select('id')
 
-    if (toDelete?.length) {
-        await supabase
-            .from('clientes')
-            .delete()
-            .in('id', toDelete.map(r => r.id))
+    if (error) {
+        return NextResponse.json({ ok: false, error: error.message }, { status: 500 })
     }
 
-    return NextResponse.json({ ok: true, eliminados: toDelete?.length ?? 0 })
+    return NextResponse.json({ ok: true, eliminados: eliminados?.length ?? 0 })
 }
 
