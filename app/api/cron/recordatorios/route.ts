@@ -20,7 +20,10 @@ import { leerUltimoPagoPorDeuda } from '@/lib/supabase/ultimo-pago'
 import { leerUltimoEnvioPorDeuda } from '@/lib/supabase/ultimo-envio'
 import { leerUltimoEnvioPorTelefono } from '@/lib/supabase/ultimo-envio-telefono'
 
-const BATCH_SIZE = 25
+// Envíos simultáneos al webhook. Cada uno es una ejecución de n8n en el mismo
+// servidor de 1 vCPU que la app y Chatwoot, y un WhatsApp desde el mismo
+// número: 25 a la vez eran un pico innecesario. Sólo alarga la corrida.
+const BATCH_SIZE = 5
 const WEBHOOK_TIMEOUT_MS = 15_000
 
 async function fetchConTimeout(url: string, init: RequestInit): Promise<Response> {

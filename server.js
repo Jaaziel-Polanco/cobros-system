@@ -96,8 +96,11 @@ async function dispararRecordatorios() {
   }
 
   try {
+    // Holgado a propósito: el cron manda de 5 en 5 al webhook, y una tanda
+    // de cientos de mensajes pasa de 2 minutos. Cortar la espera no detiene
+    // los envíos, sólo pierde el resumen de la corrida en el log.
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 120_000);
+    const timer = setTimeout(() => controller.abort(), 15 * 60_000);
 
     const res = await fetch(url, {
       method: "GET",
@@ -120,7 +123,7 @@ async function dispararRecordatorios() {
     }
   } catch (err) {
     if (err.name === "AbortError") {
-      console.error("[CRON] ❌ Timeout: el endpoint no respondió en 2 minutos");
+      console.error("[CRON] ❌ Timeout: el endpoint no respondió en 15 minutos");
     } else {
       console.error(`[CRON] ❌ Error de red al llamar endpoint: ${err.message}`);
     }
