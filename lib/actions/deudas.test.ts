@@ -106,3 +106,24 @@ describe('getDeudasConPagosPendientes', () => {
         await expect(getDeudasConPagosPendientes()).rejects.toThrow(/pagos/i)
     })
 })
+
+describe('getDeudas (pantalla de Cuentas)', () => {
+    it('devuelve TODAS las deudas aunque pasen de 1000, de la más nueva a la más vieja', async () => {
+        // /cuentas leía este select sin paginar y ordenado por fecha: con
+        // más de 1000 deudas, las más antiguas no aparecían en pantalla y
+        // el "X de Y cuentas" contaba sólo las visibles.
+        db = {
+            deudas: Array.from({ length: 1406 }, (_, i) => ({
+                ...deuda(`d-${String(i).padStart(5, '0')}`),
+                created_at: new Date(Date.UTC(2026, 0, 1) + i * 3_600_000).toISOString(),
+            })),
+        }
+        const { getDeudas } = await import('./deudas')
+
+        const deudas = await getDeudas()
+
+        expect(deudas).toHaveLength(1406)
+        expect(deudas[0].id).toBe('d-01405')
+        expect(deudas.at(-1)!.id).toBe('d-00000')
+    })
+})

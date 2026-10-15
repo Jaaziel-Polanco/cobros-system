@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { getClientesSimple } from '@/lib/actions/clientes'
+import { getDeudas } from '@/lib/actions/deudas'
 import { CuentasView } from '@/components/cuentas/cuentas-view'
 import { Deuda, Profile } from '@/lib/types'
 import { CreditCard } from 'lucide-react'
@@ -9,13 +10,10 @@ import { getEstadoEstacionDeUsuario } from '@/lib/actions/impresion'
 
 export default async function CuentasPage() {
     const supabase = await createClient()
-    const [{ data: deudas }, clientes, { data: agentes }] = await Promise.all([
-        supabase.from('deudas').select(`
-      *,
-      cliente:clientes(id, nombre, apellido, telefono),
-      agente:profiles(id, full_name, rol, activo, created_at, updated_at),
-      configuracion:configuracion_recordatorio(*)
-    `).order('created_at', { ascending: false }),
+    const [deudas, clientes, { data: agentes }] = await Promise.all([
+        // Paginada: sin paginar, con más de 1000 deudas las más antiguas no
+        // aparecían en esta pantalla.
+        getDeudas(),
         // Sin paginar, este selector ofrecia 1000 de los 1455 clientes
         // activos: 455 no se podian elegir al crear una cuenta.
         getClientesSimple(),

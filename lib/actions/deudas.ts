@@ -7,21 +7,44 @@ import { calcularDiasAtraso, getEtapaCobranza } from '@/lib/utils/cobranza-engin
 import { intentarEnvioInmediato } from '@/lib/actions/envios'
 import { hoyRD } from '@/lib/utils/fecha-rd'
 import { leerUltimoPagoPorDeuda } from '@/lib/supabase/ultimo-pago'
+import { leerTodasLasFilas, encadenable, comoLote, comoConteo } from '@/lib/supabase/paginacion'
 
+/**
+ * Todas las deudas visibles para la sesión (RLS), de la más nueva a la más
+ * vieja. Es lo que lista la pantalla de Cuentas.
+ *
+ * PAGINADA. Antes era un `select` ordenado por `created_at` sin paginar, y
+ * PostgREST corta en 1000 filas sin error: con más de 1000 deudas las más
+ * antiguas no aparecían en pantalla. Se pagina por `id` (único) y se ordena
+ * por fecha aquí.
+ */
 export async function getDeudas() {
     const supabase = await createClient()
-    const { data, error } = await supabase
-        .from('deudas')
-        .select(`
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    type FilaDeuda = { id: string; created_at: string } & Record<string, any>
+
+    const deudas = await leerTodasLasFilas<FilaDeuda>({
+        etiqueta: 'las deudas de la pantalla de Cuentas',
+        clave: 'id',
+        lote: (cursor, limite) => {
+            const base = encadenable(supabase.from('deudas').select(`
       *,
       cliente:clientes(id, nombre, apellido, telefono, email),
-      agente:profiles(id, full_name),
+      agente:profiles(id, full_name, rol, activo, created_at, updated_at),
       configuracion:configuracion_recordatorio(*)
-    `)
-        .order('created_at', { ascending: false })
+    `))
+            return comoLote<FilaDeuda>(
+                (cursor ? base.gt('id', cursor) : base).order('id').limit(limite),
+            )
+        },
+        contar: () => comoConteo(encadenable(
+            supabase.from('deudas').select('id', { count: 'exact', head: true }),
+        )),
+    })
 
-    if (error) throw new Error(error.message)
-    return data
+    return deudas.sort((a, b) =>
+        a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0)
 }
 
 export async function getDeudaById(id: string) {
