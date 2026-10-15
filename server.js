@@ -25,11 +25,29 @@ const { parse } = require("url");
 const next = require("next");
 const cron = require("node-cron");
 const path = require("path");
+const fs = require("fs");
 
 require("dotenv").config({ path: path.join(__dirname, ".env.local") });
 
 const isDev =
   process.argv.includes("--dev") || process.env.NODE_ENV === "development";
+
+// En la imagen de producción (salida standalone) Next no puede cargar
+// next.config por su cuenta: el archivo no está en /app y cargarlo exige el
+// webpack interno de Next, que el standalone no incluye. El server.js que
+// genera Next le pasa la config ya resuelta en el build por esta variable;
+// aquí se hace lo mismo. Sin esto el arranque falla con "Cannot find module
+// 'next/dist/compiled/webpack/webpack-lib'" — antes lo tapaba un
+// `npm install` en la imagen que reinstalaba ~200 paquetes en cada build.
+if (!isDev) {
+  const configDelBuild = path.join(__dirname, ".next", "required-server-files.json");
+  if (fs.existsSync(configDelBuild)) {
+    process.env.__NEXT_PRIVATE_STANDALONE_CONFIG = JSON.stringify(
+      require(configDelBuild).config,
+    );
+  }
+}
+
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 const HOSTNAME = process.env.HOSTNAME ?? "0.0.0.0";
 

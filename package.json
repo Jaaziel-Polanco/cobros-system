@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build --webpack",
     "start": "node server.js",
     "start:dev": "node server.js --dev",
     "cron:test": "node -e \"require('dotenv').config({path:'.env.local'}); const s=process.env.CRON_SECRET; fetch('http://localhost:3000/api/cron/recordatorios',{headers:{'x-cron-secret':s}}).then(r=>r.json()).then(console.log).catch(console.error)\"",
