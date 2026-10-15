@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { getSesion } from '@/lib/supabase/sesion'
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import { ArrowLeft, Phone, Mail, MapPin, FileText } from 'lucide-react'
@@ -36,39 +37,38 @@ export default async function ClienteDetailPage({ params }: { params: Promise<{ 
     const { id } = await params
     const supabase = await createClient()
 
-    const { data: cliente, error } = await supabase
-        .from('clientes')
-        .select(`
+    // Dos tandas en paralelo; antes eran ocho lecturas una detrás de otra.
+    const [{ data: cliente, error }, { data: logs }, sesion] = await Promise.all([
+        supabase
+            .from('clientes')
+            .select(`
       *,
       agente:profiles(id, full_name),
       deudas(*, configuracion:configuracion_recordatorio(*)),
       referencias_cliente(*)
     `)
-        .eq('id', id)
-        .single()
+            .eq('id', id)
+            .single(),
+        // Historial de envíos del cliente. Sólo lo que se pinta: `*` traía
+        // también `payload` y `respuesta_body` de cada envío.
+        supabase
+            .from('envios_log')
+            .select('id, etapa, enviado_por, mensaje_enviado, estado, sent_at')
+            .eq('cliente_id', id)
+            .order('sent_at', { ascending: false })
+            .limit(20),
+        getSesion(),
+    ])
 
     if (error || !cliente) notFound()
 
-    // Historial de envíos del cliente
-    const { data: logs } = await supabase
-        .from('envios_log')
-        .select('*')
-        .eq('cliente_id', id)
-        .order('sent_at', { ascending: false })
-        .limit(20)
+    const permisos = getPermisos(sesion!.perfil!)
 
-    const { data: { user } } = await supabase.auth.getUser()
-    const { data: perfil } = await supabase
-        .from('profiles')
-        .select('id, rol, permisos')
-        .eq('id', user!.id)
-        .single()
-
-    const permisos = getPermisos(perfil!)
-
-    const tickets = permisos.ver_tickets ? await getTicketsCliente(id) : []
-    const pagosSinTicket = permisos.ver_tickets ? await getPagosSinTicket(id) : []
-    const estacion = permisos.imprimir_ticket ? await getEstadoEstacionDeUsuario() : null
+    const [tickets, pagosSinTicket, estacion] = await Promise.all([
+        permisos.ver_tickets ? getTicketsCliente(id) : Promise.resolve([]),
+        permisos.ver_tickets ? getPagosSinTicket(id) : Promise.resolve([]),
+        permisos.imprimir_ticket ? getEstadoEstacionDeUsuario() : Promise.resolve(null),
+    ])
     // Objeto plano, no Map: los props de un Client Component (TicketsClientePanel)
     // deben ser serializables por el protocolo de React Server Components.
     const estadoImpresion = permisos.ver_tickets
