@@ -358,7 +358,7 @@ export async function imprimirPaginaDePrueba(
 /** print_jobs con lo mínimo para mostrarlo en la cola sin una segunda
  *  consulta: número de boleto (o nada, si es una página de prueba) y
  *  nombre de la estación que lo reclamó. */
-export interface PrintJobConDetalle extends PrintJob {
+export interface PrintJobConDetalle extends Omit<PrintJob, 'payload_escpos'> {
     ticket: { numero_formateado: string } | null
     estacion: { nombre: string } | null
 }
@@ -400,7 +400,12 @@ export async function getColaImpresion(sucursalId?: string): Promise<PrintJobCon
 
     let query = supabase
         .from('print_jobs')
-        .select('*, ticket:tickets(numero_formateado), estacion:estaciones_impresion(nombre)')
+        // Sin `payload_escpos`: la tirilla entera en base64 de cada trabajo,
+        // que la cola no muestra y /estaciones volvía a pedir cada 30 s.
+        .select(`id, ticket_id, sucursal_id, estado, es_prueba, es_copia, preview_texto,
+            intentos, max_intentos, estacion_id, claimed_at, impreso_at, error_mensaje,
+            solicitado_por, created_at,
+            ticket:tickets(numero_formateado), estacion:estaciones_impresion(nombre)`)
         .or(`estado.in.(pendiente,reclamado,error),created_at.gte.${hace24h}`)
 
     if (sucursalId) query = query.eq('sucursal_id', sucursalId)
