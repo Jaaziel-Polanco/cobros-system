@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { getClientesSimple } from '@/lib/actions/clientes'
 import { getDeudas } from '@/lib/actions/deudas'
+import { getSesion } from '@/lib/supabase/sesion'
 import { CuentasView } from '@/components/cuentas/cuentas-view'
 import { Deuda, Profile } from '@/lib/types'
 import { CreditCard } from 'lucide-react'
@@ -22,12 +23,8 @@ export default async function CuentasPage() {
 
     // I8: sin esto, el modal de boleto se abría tras registrar un pago sin
     // comprobar si el usuario puede usarlo -- solo podía fallar.
-    const { data: { user } } = await supabase.auth.getUser()
-    const { data: perfil } = await supabase
-        .from('profiles')
-        .select('id, rol, permisos')
-        .eq('id', user!.id)
-        .single()
+    // La misma sesión que ya leyó el layout (ver lib/supabase/sesion.ts).
+    const perfil = (await getSesion())?.perfil
     const puedeVerTickets = perfil ? getPermisos(perfil).ver_tickets : false
     const puedeImprimir = perfil ? getPermisos(perfil).imprimir_ticket : false
     const estacion = puedeImprimir ? await getEstadoEstacionDeUsuario() : null

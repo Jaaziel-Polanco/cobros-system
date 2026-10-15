@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createClient as createAdminClient } from '@supabase/supabase-js'
 import { revalidatePath } from 'next/cache'
 import { avisarTrabajosNuevos } from '@/lib/api-print/avisos'
+import { getSesion } from '@/lib/supabase/sesion'
 import { getPermisos } from '@/lib/utils/permisos'
 import { construirTirillaTicket } from '@/lib/escpos/tirilla-ticket'
 import { aBytes, selectorCodepage } from '@/lib/escpos/codificacion'
@@ -45,15 +46,11 @@ export async function getEstadoEstacionDeUsuario(): Promise<{
     estacionNombre: string
     enLinea: boolean
 } | null> {
-    const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return null
-
-    const { data: perfil } = await supabase
-        .from('profiles').select('sucursal_id').eq('id', user.id).single()
-
+    // Usuario y perfil compartidos con el resto de la petición.
+    const perfil = (await getSesion())?.perfil
     if (!perfil?.sucursal_id) return null
 
+    const supabase = await createClient()
     const { data: estacion } = await supabase
         .from('estaciones_impresion')
         .select('nombre, ultimo_heartbeat, sucursal:sucursales(nombre)')

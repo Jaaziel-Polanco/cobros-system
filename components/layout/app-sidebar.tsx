@@ -136,6 +136,10 @@ export function AppSidebar({ profile, mobileOpen = false, onMobileClose }: AppSi
                         <Link
                             key={item.href}
                             href={item.href}
+                            // Sin loading.tsx el prefetch sólo trae el árbol de rutas, y
+                            // cada uno pasa por el middleware (un getUser a Supabase):
+                            // ~14 peticiones por carga y tras cada refresh, para nada.
+                            prefetch={false}
                             title={collapsed ? item.label : undefined}
                             onClick={onMobileClose}
                             className={cn(

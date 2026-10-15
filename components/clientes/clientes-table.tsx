@@ -291,7 +291,7 @@ export function ClientesTable({ clientes, agentes, currentProfile }: ClientesTab
                                                     style={{ background: '#0c1d38', border: '1px solid rgba(0,126,198,0.15)' }}
                                                     className="text-slate-200">
                                                     <DropdownMenuItem asChild>
-                                                        <Link href={`/clientes/${c.id}`} className="flex items-center gap-2 cursor-pointer">
+                                                        <Link href={`/clientes/${c.id}`} prefetch={false} className="flex items-center gap-2 cursor-pointer">
                                                             <Eye className="w-4 h-4" /> Ver detalle
                                                         </Link>
                                                     </DropdownMenuItem>

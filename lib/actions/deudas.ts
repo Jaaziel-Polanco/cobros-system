@@ -8,6 +8,7 @@ import { intentarEnvioInmediato } from '@/lib/actions/envios'
 import { hoyRD } from '@/lib/utils/fecha-rd'
 import { leerUltimoPagoPorDeuda } from '@/lib/supabase/ultimo-pago'
 import { leerTodasLasFilas, encadenable, comoLote, comoConteo } from '@/lib/supabase/paginacion'
+import { getSesion } from '@/lib/supabase/sesion'
 
 /**
  * Todas las deudas visibles para la sesión (RLS), de la más nueva a la más
@@ -239,9 +240,10 @@ export async function getPagosDeuda(deudaId: string) {
 }
 
 export async function getDeudasConPagosPendientes() {
+    const sesion = await getSesion()
+    if (!sesion) return []
+    const { user } = sesion
     const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return []
 
     const { data: deudas, error } = await supabase
         .from('deudas')

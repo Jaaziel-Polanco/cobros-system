@@ -239,7 +239,7 @@ export function CuentasView({
                                 return (
                                     <tr key={d.id} className={cn('text-slate-300 hover:bg-white/3 transition-colors', d.pausado && 'opacity-60')}>
                                         <td className="p-4">
-                                            <Link href={`/clientes/${d.cliente_id}`} className="font-semibold text-white transition-colors" style={{ textDecorationLine: 'none' }} onMouseEnter={e => (e.currentTarget.style.color = '#5bbfed')} onMouseLeave={e => (e.currentTarget.style.color = 'white')}>
+                                            <Link href={`/clientes/${d.cliente_id}`} prefetch={false} className="font-semibold text-white transition-colors" style={{ textDecorationLine: 'none' }} onMouseEnter={e => (e.currentTarget.style.color = '#5bbfed')} onMouseLeave={e => (e.currentTarget.style.color = 'white')}>
                                                 {d.cliente ? `${d.cliente.nombre} ${d.cliente.apellido}` : '—'}
                                             </Link>
                                             <div className="text-xs text-slate-500">{d.cliente?.telefono}</div>
